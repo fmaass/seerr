@@ -77,6 +77,8 @@ export interface DVRSettings {
   preventSearch: boolean;
   tagRequests: boolean;
   overrideRule: number[];
+  blocklistSyncEnabled?: boolean;
+  blocklistSyncInterval?: number;
 }
 
 export interface RadarrSettings extends DVRSettings {
@@ -146,6 +148,8 @@ export interface MainSettings {
   enableSpecialEpisodes: boolean;
   locale: string;
   youtubeUrl: string;
+  blocklistSyncEnabled?: boolean;
+  blocklistSyncInterval?: number;
 }
 
 export interface ProxySettings {
@@ -346,7 +350,8 @@ export type JobId =
   | 'jellyfin-full-scan'
   | 'image-cache-cleanup'
   | 'availability-sync'
-  | 'process-blacklisted-tags';
+  | 'process-blacklisted-tags'
+  | 'blocklist-sync';
 
 export interface AllSettings {
   clientId: string;
@@ -403,6 +408,8 @@ class Settings {
         enableSpecialEpisodes: false,
         locale: 'en',
         youtubeUrl: '',
+        blocklistSyncEnabled: true,
+        blocklistSyncInterval: 60, // Default: 60 minutes
       },
       plex: {
         name: '',
@@ -572,6 +579,9 @@ class Settings {
         },
         'process-blacklisted-tags': {
           schedule: '0 30 1 */7 * *',
+        },
+        'blocklist-sync': {
+          schedule: '0 0 * * * *', // Every hour at minute 0
         },
       },
       network: {

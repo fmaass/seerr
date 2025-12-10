@@ -1,5 +1,6 @@
 import { MediaServerType } from '@server/constants/server';
 import blacklistedTagsProcessor from '@server/job/blacklistedTagsProcessor';
+import blocklistSyncJob from '@server/job/blocklistSync';
 import availabilitySync from '@server/lib/availabilitySync';
 import downloadTracker from '@server/lib/downloadtracker';
 import ImageProxy from '@server/lib/imageproxy';
@@ -253,6 +254,54 @@ export const startJobs = (): void => {
     running: () => blacklistedTagsProcessor.status().running,
     cancelFn: () => blacklistedTagsProcessor.cancel(),
   });
+
+  // Sync blocklist from Radarr/Sonarr
+  // Use configurable interval from settings (default: 60 minutes)
+  const blocklistSyncInterval = getSettings().main.blocklistSyncEnabled !== false
+    ? getSettings().main.blocklistSyncInterval ?? 60
+    : null;
+
+  if (blocklistSyncInterval !== null && blocklistSyncInterval > 0) {
+    let blocklistSyncCron: string;
+
+    if (blocklistSyncInterval >= 60) {
+      const hours = Math.floor(blocklistSyncInterval / 60);
+      blocklistSyncCron = `0 0 */${hours} * * *`;
+    } else {
+      blocklistSyncCron = `0 */${blocklistSyncInterval} * * * *`;
+    }
+
+    const intervalType: 'minutes' | 'hours' = 'minutes';
+
+    logger.info('Scheduling blocklist sync job', {
+      label: 'Jobs',
+      interval: blocklistSyncInterval,
+      intervalType: 'minutes',
+      cronSchedule: blocklistSyncCron,
+    });
+
+    scheduledJobs.push({
+      id: 'blocklist-sync',
+      name: 'Blocklist Sync',
+      type: 'process',
+      interval: intervalType,
+      cronSchedule: blocklistSyncCron,
+      job: schedule.scheduleJob(blocklistSyncCron, () => {
+        logger.info('Starting scheduled job: Blocklist Sync', {
+          label: 'Jobs',
+        });
+        blocklistSyncJob.run();
+      }),
+      running: () => blocklistSyncJob.status().running,
+      cancelFn: () => blocklistSyncJob.cancel(),
+    });
+  } else {
+    logger.info('Blocklist sync job disabled or invalid interval', {
+      label: 'Jobs',
+      blocklistSyncEnabled: getSettings().main.blocklistSyncEnabled,
+      blocklistSyncInterval,
+    });
+  }
 
   logger.info('Scheduled jobs loaded', { label: 'Jobs' });
 };

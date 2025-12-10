@@ -5,7 +5,7 @@ import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { isValidURL } from '@app/utils/urlValidationHelper';
 import { Transition } from '@headlessui/react';
-import type { SonarrSettings } from '@server/lib/settings';
+import type { SonarrSettings, MainSettings } from '@server/lib/settings';
 import axios from 'axios';
 import { Field, Formik } from 'formik';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -13,6 +13,7 @@ import { useIntl } from 'react-intl';
 import type { OnChangeValue } from 'react-select';
 import Select from 'react-select';
 import { useToasts } from 'react-toast-notifications';
+import useSWR from 'swr';
 import * as Yup from 'yup';
 
 type OptionType = {
@@ -78,6 +79,12 @@ const messages = defineMessages('components.Settings.SonarrModal', {
   animeTags: 'Anime Tags',
   notagoptions: 'No tags.',
   selecttags: 'Select tags',
+  blocklistSyncEnabled: 'Enable Blocklist Sync',
+  blocklistSyncEnabledTip:
+    'Sync Sonarr blocklist to Seerr blacklist automatically',
+  blocklistSyncInterval: 'Blocklist Sync Interval (minutes)',
+  blocklistSyncIntervalTip:
+    'How often to sync the blocklist from Sonarr (default: 60 minutes)',
 });
 
 interface SonarrModalProps {
@@ -98,6 +105,7 @@ const SonarrModal = ({ onClose, sonarr, onSave }: SonarrModalProps) => {
     languageProfiles: null,
     tags: [],
   });
+  const { data: mainSettings } = useSWR<MainSettings>('/api/v1/settings/main');
 
   const SonarrSettingsSchema = Yup.object().shape({
     name: Yup.string().required(
@@ -247,6 +255,12 @@ const SonarrModal = ({ onClose, sonarr, onSave }: SonarrModalProps) => {
           syncEnabled: sonarr?.syncEnabled ?? false,
           enableSearch: !sonarr?.preventSearch,
           tagRequests: sonarr?.tagRequests ?? false,
+          blocklistSyncEnabled:
+            sonarr?.blocklistSyncEnabled ?? mainSettings?.blocklistSyncEnabled ?? true,
+          blocklistSyncInterval:
+            sonarr?.blocklistSyncInterval ??
+            mainSettings?.blocklistSyncInterval ??
+            60,
         }}
         validationSchema={SonarrSettingsSchema}
         onSubmit={async (values) => {
@@ -290,6 +304,8 @@ const SonarrModal = ({ onClose, sonarr, onSave }: SonarrModalProps) => {
               syncEnabled: values.syncEnabled,
               preventSearch: !values.enableSearch,
               tagRequests: values.tagRequests,
+              blocklistSyncEnabled: values.blocklistSyncEnabled,
+              blocklistSyncInterval: Number(values.blocklistSyncInterval),
             };
             if (!sonarr) {
               await axios.post('/api/v1/settings/sonarr', submission);
@@ -1023,6 +1039,49 @@ const SonarrModal = ({ onClose, sonarr, onSave }: SonarrModalProps) => {
                     />
                   </div>
                 </div>
+                <div className="form-row">
+                  <label htmlFor="blocklistSyncEnabled" className="checkbox-label">
+                    {intl.formatMessage(messages.blocklistSyncEnabled)}
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.blocklistSyncEnabledTip)}
+                    </span>
+                  </label>
+                  <div className="form-input-area">
+                    <Field
+                      type="checkbox"
+                      id="blocklistSyncEnabled"
+                      name="blocklistSyncEnabled"
+                    />
+                  </div>
+                </div>
+                {values.blocklistSyncEnabled && (
+                  <div className="form-row">
+                    <label htmlFor="blocklistSyncInterval" className="text-label">
+                      {intl.formatMessage(messages.blocklistSyncInterval)}
+                      <span className="label-tip">
+                        {intl.formatMessage(messages.blocklistSyncIntervalTip)}
+                      </span>
+                    </label>
+                    <div className="form-input-area">
+                      <div className="form-input-field">
+                        <Field
+                          id="blocklistSyncInterval"
+                          name="blocklistSyncInterval"
+                          type="text"
+                          inputMode="numeric"
+                          className="short"
+                        />
+                      </div>
+                      {errors.blocklistSyncInterval &&
+                        touched.blocklistSyncInterval &&
+                        typeof errors.blocklistSyncInterval === 'string' && (
+                          <div className="error">
+                            {errors.blocklistSyncInterval}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                )}
               </div>
             </Modal>
           );

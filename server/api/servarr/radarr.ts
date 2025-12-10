@@ -63,6 +63,13 @@ export interface RadarrMovie {
   };
 }
 
+export interface RadarrImportExclusion {
+  id: number;
+  tmdbId: number;
+  movieTitle: string;
+  movieYear: number;
+}
+
 class RadarrAPI extends ServarrBase<{ movieId: number }> {
   constructor({ url, apiKey }: { url: string; apiKey: string }) {
     super({ url, apiKey, cacheName: 'radarr', apiName: 'Radarr' });
@@ -277,6 +284,44 @@ class RadarrAPI extends ServarrBase<{ movieId: number }> {
       this.removeCache(`/movie/${externalId}`);
     }
   };
+
+  public getImportExclusions = async (): Promise<RadarrImportExclusion[]> => {
+    try {
+      const response = await this.axios.get<RadarrImportExclusion[]>(
+        '/exclusions'
+      );
+      return response.data;
+    } catch (e) {
+      throw new Error(
+        `[Radarr] Failed to retrieve import exclusions: ${e.message}`
+      );
+    }
+  };
+
+  public async isMovieBlocklisted(tmdbId: number): Promise<boolean> {
+    try {
+      const exclusions = await this.getImportExclusions();
+
+      if (!Array.isArray(exclusions)) {
+        logger.error('Radarr returned unexpected exclusions format', {
+          label: 'Radarr API',
+          tmdbId,
+          exclusions,
+        });
+        return false;
+      }
+
+      return exclusions.some((exclusion) => exclusion.tmdbId === tmdbId);
+    } catch (e) {
+      logger.error('Failed to check Radarr blocklist', {
+        label: 'Radarr API',
+        errorMessage: e.message,
+        tmdbId,
+      });
+      // On error, allow the request to proceed (fail open)
+      return false;
+    }
+  }
 }
 
 export default RadarrAPI;
