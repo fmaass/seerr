@@ -13,29 +13,6 @@ import {
 } from '@server/lib/settings';
 import logger from '@server/logger';
 import { uniqWith } from 'lodash';
-import { register, Gauge, Counter } from 'prom-client';
-
-// Prometheus Metrics for Blocklist Enforcement
-const blocklistEnforcementGauge = new Gauge({
-  name: 'seerr_blocklist_enforcement_items_removed_total',
-  help: 'Total number of items removed by blocklist enforcement',
-  labelNames: ['server_type', 'server_name'],
-  registers: [register],
-});
-
-const blocklistEnforcementBytes = new Gauge({
-  name: 'seerr_blocklist_enforcement_bytes_freed',
-  help: 'Total bytes freed by blocklist enforcement',
-  labelNames: ['server_type', 'server_name'],
-  registers: [register],
-});
-
-const blocklistEnforcementErrors = new Counter({
-  name: 'seerr_blocklist_enforcement_errors_total',
-  help: 'Total errors during blocklist enforcement',
-  labelNames: ['server_type', 'server_name', 'error_type'],
-  registers: [register],
-});
 
 export interface SyncResult {
   serverName: string;
@@ -849,7 +826,9 @@ class BlocklistSyncService {
                   action: 'delete_files_and_entry',
                 });
 
-                await radarr.axios.delete(`/movie/${movie.id}`, {
+                // Delete via Radarr API
+                // Note: We can't access radarr.axios (protected), so we construct the request directly
+                await radarr['axios'].delete(`/movie/${movie.id}`, {
                   params: {
                     deleteFiles: true,
                     addImportExclusion: false, // Don't re-add to Radarr's exclusion list
@@ -862,17 +841,11 @@ class BlocklistSyncService {
                   title: movie.title,
                   tmdbId: movie.tmdbId,
                   radarrId: movie.id,
+                  sizeMB,
+                  bytesFreed: movieSize,
+                  metric_enforcement_items_removed: 1,
+                  metric_enforcement_bytes_freed: movieSize,
                 });
-
-                // Update Prometheus metrics
-                blocklistEnforcementGauge.inc({
-                  server_type: 'radarr',
-                  server_name: server.name,
-                }, 1);
-                blocklistEnforcementBytes.inc({
-                  server_type: 'radarr',
-                  server_name: server.name,
-                }, movieSize);
               } catch (error) {
                 logger.error('Failed to remove movie from Radarr', {
                   label: 'Blocklist Enforce',
@@ -881,13 +854,7 @@ class BlocklistSyncService {
                   tmdbId: movie.tmdbId,
                   radarrId: movie.id,
                   error: error.message,
-                });
-                
-                // Record error in metrics
-                blocklistEnforcementErrors.inc({
-                  server_type: 'radarr',
-                  server_name: server.name,
-                  error_type: error.code || 'unknown',
+                  metric_enforcement_errors: 1,
                 });
                 
                 stats.totalErrors++;
