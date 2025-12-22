@@ -697,6 +697,11 @@ class BlocklistSyncService {
    * Finds movies in Radarr that are blacklisted in Seerr
    */
   public async enforceRadarrBlacklist(dryRun: boolean = true): Promise<SyncStats> {
+    logger.info('enforceRadarrBlacklist called', {
+      label: 'Blocklist Enforce',
+      dryRun,
+    });
+
     const settings = getSettings();
     const stats: SyncStats = {
       totalServers: 0,
@@ -707,12 +712,26 @@ class BlocklistSyncService {
       totalErrors: 0,
     };
 
+    logger.info('Checking for Radarr servers with enforcement', {
+      label: 'Blocklist Enforce',
+      totalRadarrServers: settings.radarr.length,
+    });
+
     // Get servers with enforcement enabled
     const radarrServers = uniqWith(
       settings.radarr.filter(
-        (server) =>
-          server.syncEnabled !== false &&
-          server.blocklistEnforceEnabled === true
+        (server) => {
+          logger.debug('Checking Radarr server', {
+            label: 'Blocklist Enforce',
+            serverName: server.name,
+            syncEnabled: server.syncEnabled,
+            blocklistEnforceEnabled: server.blocklistEnforceEnabled,
+          });
+          return (
+            server.syncEnabled !== false &&
+            server.blocklistEnforceEnabled === true
+          );
+        }
       ),
       (a, b) =>
         a.hostname === b.hostname &&
@@ -720,8 +739,13 @@ class BlocklistSyncService {
         a.baseUrl === b.baseUrl
     );
 
+    logger.info('Found Radarr servers with enforcement enabled', {
+      label: 'Blocklist Enforce',
+      count: radarrServers.length,
+    });
+
     if (radarrServers.length === 0) {
-      logger.debug('No Radarr servers with enforcement enabled', {
+      logger.warn('No Radarr servers with enforcement enabled', {
         label: 'Blocklist Enforce',
       });
       return stats;
