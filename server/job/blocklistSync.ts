@@ -1,4 +1,5 @@
 import blocklistSyncService from '@server/lib/blocklistSync';
+import { getSettings } from '@server/lib/settings';
 import type { RunnableScanner, StatusBase } from '@server/lib/scanners/baseScanner';
 import logger from '@server/logger';
 
