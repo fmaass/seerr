@@ -702,7 +702,9 @@ class BlocklistSyncService {
       dryRun,
     });
 
+    // Reload settings to get latest configuration
     const settings = getSettings();
+    await settings.load();
     const stats: SyncStats = {
       totalServers: 0,
       totalItems: 0,
