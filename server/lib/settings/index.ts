@@ -152,6 +152,7 @@ export interface MainSettings {
   youtubeUrl: string;
   blocklistSyncEnabled?: boolean;
   blocklistSyncInterval?: number;
+  blocklistEnforceDryRun?: boolean; // If true, only log what would be deleted (default: true)
 }
 
 export interface ProxySettings {
@@ -412,6 +413,7 @@ class Settings {
         youtubeUrl: '',
         blocklistSyncEnabled: true,
         blocklistSyncInterval: 60, // Default: 60 minutes
+        blocklistEnforceDryRun: true, // Default: dry-run only (safe)
       },
       plex: {
         name: '',
