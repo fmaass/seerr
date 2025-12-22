@@ -693,13 +693,12 @@ class BlocklistSyncService {
     return true; // New entry added
   }
   /**
-   * Enforce Seerr blacklist on Radarr (DRY RUN - logs only)
-   * Finds movies in Radarr that are blacklisted in Seerr
+   * Enforce Seerr blacklist on Radarr
+   * Finds and removes movies in Radarr that are blacklisted in Seerr
    */
-  public async enforceRadarrBlacklist(dryRun: boolean = true): Promise<SyncStats> {
+  public async enforceRadarrBlacklist(): Promise<SyncStats> {
     logger.info('enforceRadarrBlacklist called', {
       label: 'Blocklist Enforce',
-      dryRun,
     });
 
     // Get settings (already loaded by main app)
@@ -765,7 +764,6 @@ class BlocklistSyncService {
       label: 'Blocklist Enforce',
       serverCount: radarrServers.length,
       blacklistedCount: blacklistedMovies.length,
-      dryRun,
     });
 
     const blacklistMap = new Map(
@@ -802,64 +800,51 @@ class BlocklistSyncService {
               continue;
             }
 
-            if (dryRun) {
-              logger.info('[DRY RUN] Would remove movie from Radarr', {
+            // Phase 4: Delete the movie
+            try {
+              logger.warn('Removing blacklisted movie from Radarr', {
                 label: 'Blocklist Enforce',
                 serverName: server.name,
                 title: movie.title,
                 tmdbId: movie.tmdbId,
                 radarrId: movie.id,
                 sizeMB,
-                monitored: movie.monitored,
                 hoursSinceAdded: hoursSinceAdded.toFixed(1),
+                action: 'delete_files_and_entry',
               });
-            } else {
-              // Phase 4: Actual deletion
-              try {
-                logger.warn('Removing blacklisted movie from Radarr', {
-                  label: 'Blocklist Enforce',
-                  serverName: server.name,
-                  title: movie.title,
-                  tmdbId: movie.tmdbId,
-                  radarrId: movie.id,
-                  sizeMB,
-                  action: 'delete_files_and_entry',
-                });
 
-                // Delete via Radarr API
-                // Note: We can't access radarr.axios (protected), so we construct the request directly
-                await radarr['axios'].delete(`/movie/${movie.id}`, {
-                  params: {
-                    deleteFiles: true,
-                    addImportExclusion: false, // Don't re-add to Radarr's exclusion list
-                  },
-                });
+              // Delete via Radarr API
+              await radarr['axios'].delete(`/movie/${movie.id}`, {
+                params: {
+                  deleteFiles: true,
+                  addImportExclusion: false, // Don't re-add to Radarr's exclusion list
+                },
+              });
 
-                logger.info('Successfully removed movie from Radarr', {
-                  label: 'Blocklist Enforce',
-                  serverName: server.name,
-                  title: movie.title,
-                  tmdbId: movie.tmdbId,
-                  radarrId: movie.id,
-                  sizeMB,
-                  bytesFreed: movieSize,
-                  metric_enforcement_items_removed: 1,
-                  metric_enforcement_bytes_freed: movieSize,
-                });
-              } catch (error) {
-                logger.error('Failed to remove movie from Radarr', {
-                  label: 'Blocklist Enforce',
-                  serverName: server.name,
-                  title: movie.title,
-                  tmdbId: movie.tmdbId,
-                  radarrId: movie.id,
-                  error: error.message,
-                  metric_enforcement_errors: 1,
-                });
-                
-                stats.totalErrors++;
-                continue; // Continue with next movie even if one fails
-              }
+              logger.info('Successfully removed movie from Radarr', {
+                label: 'Blocklist Enforce',
+                serverName: server.name,
+                title: movie.title,
+                tmdbId: movie.tmdbId,
+                radarrId: movie.id,
+                sizeMB,
+                bytesFreed: movieSize,
+                metric_enforcement_items_removed: 1,
+                metric_enforcement_bytes_freed: movieSize,
+              });
+            } catch (error) {
+              logger.error('Failed to remove movie from Radarr', {
+                label: 'Blocklist Enforce',
+                serverName: server.name,
+                title: movie.title,
+                tmdbId: movie.tmdbId,
+                radarrId: movie.id,
+                error: error.message,
+                metric_enforcement_errors: 1,
+              });
+              
+              stats.totalErrors++;
+              continue; // Continue with next movie even if one fails
             }
 
             removedCount++;
@@ -871,7 +856,6 @@ class BlocklistSyncService {
           label: 'Blocklist Enforce',
           serverName: server.name,
           removedCount,
-          dryRun,
         });
       } catch (error) {
         logger.error('Error enforcing blacklist on Radarr', {
@@ -886,7 +870,6 @@ class BlocklistSyncService {
     logger.info('Blacklist enforcement completed', {
       label: 'Blocklist Enforce',
       stats,
-      dryRun,
     });
 
     return stats;

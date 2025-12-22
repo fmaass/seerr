@@ -28,9 +28,8 @@ class BlocklistSyncJob implements RunnableScanner<StatusBase> {
       ]);
 
       // Enforce Seerr blacklist on Radarr/Sonarr (Seerr → Radarr/Sonarr)
-      const settings = getSettings();
-      const dryRun = settings.main.blocklistEnforceDryRun !== false; // Default to dry-run
-      await blocklistSyncService.enforceRadarrBlacklist(dryRun);
+      // If blocklistEnforceEnabled=true on a server, items WILL be deleted
+      await blocklistSyncService.enforceRadarrBlacklist();
 
       logger.info('Completed scheduled job: Blocklist Sync', {
         label: 'Jobs',
