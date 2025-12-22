@@ -266,6 +266,8 @@ const SonarrModal = ({ onClose, sonarr, onSave }: SonarrModalProps) => {
             sonarr?.blocklistSyncInterval ??
             mainSettings?.blocklistSyncInterval ??
             60,
+          blocklistEnforceEnabled: sonarr?.blocklistEnforceEnabled ?? false,
+          blocklistEnforceMode: sonarr?.blocklistEnforceMode ?? 'delete',
         }}
         validationSchema={SonarrSettingsSchema}
         onSubmit={async (values) => {
@@ -311,6 +313,8 @@ const SonarrModal = ({ onClose, sonarr, onSave }: SonarrModalProps) => {
               tagRequests: values.tagRequests,
               blocklistSyncEnabled: values.blocklistSyncEnabled,
               blocklistSyncInterval: Number(values.blocklistSyncInterval),
+              blocklistEnforceEnabled: values.blocklistEnforceEnabled,
+              blocklistEnforceMode: values.blocklistEnforceMode,
             };
             if (!sonarr) {
               await axios.post('/api/v1/settings/sonarr', submission);

@@ -250,6 +250,8 @@ const RadarrModal = ({ onClose, radarr, onSave }: RadarrModalProps) => {
             radarr?.blocklistSyncInterval ??
             mainSettings?.blocklistSyncInterval ??
             60,
+          blocklistEnforceEnabled: radarr?.blocklistEnforceEnabled ?? false,
+          blocklistEnforceMode: radarr?.blocklistEnforceMode ?? 'delete',
         }}
         validationSchema={RadarrSettingsSchema}
         onSubmit={async (values) => {
@@ -278,6 +280,8 @@ const RadarrModal = ({ onClose, radarr, onSave }: RadarrModalProps) => {
               tagRequests: values.tagRequests,
               blocklistSyncEnabled: values.blocklistSyncEnabled,
               blocklistSyncInterval: Number(values.blocklistSyncInterval),
+              blocklistEnforceEnabled: values.blocklistEnforceEnabled,
+              blocklistEnforceMode: values.blocklistEnforceMode,
             };
             if (!radarr) {
               await axios.post('/api/v1/settings/radarr', submission);
