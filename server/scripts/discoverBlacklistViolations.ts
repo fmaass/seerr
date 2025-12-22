@@ -119,19 +119,20 @@ class BlacklistDiscovery {
         for (const movie of radarrMovies) {
           if (movie.tmdbId && blacklistMap.has(movie.tmdbId)) {
             const blacklistInfo = blacklistMap.get(movie.tmdbId);
+            const movieSize = movie.movieFile?.size || 0;
             const item: ViolationItem = {
               title: movie.title,
               tmdbId: movie.tmdbId,
               arrId: movie.id,
-              year: movie.year,
-              sizeOnDisk: movie.sizeOnDisk,
+              year: undefined, // Year not directly available in RadarrMovie
+              sizeOnDisk: movieSize,
               added: movie.added ? new Date(movie.added) : undefined,
               monitored: movie.monitored,
               blacklistSource: blacklistInfo?.source,
             };
 
             serverViolations.push(item);
-            totalSize += movie.sizeOnDisk || 0;
+            totalSize += movieSize;
 
             logger.debug('Found violation', {
               label: 'Blacklist Discovery',
