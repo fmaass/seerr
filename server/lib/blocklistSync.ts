@@ -786,19 +786,16 @@ class BlocklistSyncService {
             const movieSize = movie.movieFile?.size || 0;
             const sizeMB = (movieSize / 1024 / 1024).toFixed(2);
             
-            // Safety: Skip recently added items (24-hour grace period)
+            // Calculate age for logging
             const addedDate = new Date(movie.added);
             const hoursSinceAdded = (Date.now() - addedDate.getTime()) / 1000 / 60 / 60;
             
-            if (hoursSinceAdded < 24) {
-              logger.debug('Skipping recently added movie (grace period)', {
-                label: 'Blocklist Enforce',
-                title: movie.title,
-                tmdbId: movie.tmdbId,
-                hoursSinceAdded: hoursSinceAdded.toFixed(1),
-              });
-              continue;
-            }
+            // Note: 24-hour grace period removed - deletes immediately
+            // If you want grace period back, uncomment:
+            // if (hoursSinceAdded < 24) {
+            //   logger.debug('Skipping recently added movie (grace period)');
+            //   continue;
+            // }
 
             // Phase 4: Delete the movie
             try {
