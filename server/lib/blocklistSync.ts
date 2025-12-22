@@ -692,6 +692,188 @@ class BlocklistSyncService {
 
     return true; // New entry added
   }
+  /**
+   * Enforce Seerr blacklist on Radarr
+   * Finds and removes movies in Radarr that are blacklisted in Seerr
+   */
+  public async enforceRadarrBlacklist(): Promise<SyncStats> {
+    logger.info('enforceRadarrBlacklist called', {
+      label: 'Blocklist Enforce',
+    });
+
+    // Get settings (already loaded by main app)
+    const settings = getSettings();
+    const stats: SyncStats = {
+      totalServers: 0,
+      totalItems: 0,
+      totalAdded: 0,
+      totalUpdated: 0,
+      totalRemoved: 0,
+      totalErrors: 0,
+    };
+
+    logger.info('Checking for Radarr servers with enforcement', {
+      label: 'Blocklist Enforce',
+      totalRadarrServers: settings.radarr.length,
+    });
+
+    // Get servers with enforcement enabled
+    const radarrServers = uniqWith(
+      settings.radarr.filter(
+        (server) => {
+          logger.debug('Checking Radarr server', {
+            label: 'Blocklist Enforce',
+            serverName: server.name,
+            syncEnabled: server.syncEnabled,
+            blocklistEnforceEnabled: server.blocklistEnforceEnabled,
+          });
+          return (
+            server.syncEnabled !== false &&
+            server.blocklistEnforceEnabled === true
+          );
+        }
+      ),
+      (a, b) =>
+        a.hostname === b.hostname &&
+        a.port === b.port &&
+        a.baseUrl === b.baseUrl
+    );
+
+    logger.info('Found Radarr servers with enforcement enabled', {
+      label: 'Blocklist Enforce',
+      count: radarrServers.length,
+    });
+
+    if (radarrServers.length === 0) {
+      logger.warn('No Radarr servers with enforcement enabled', {
+        label: 'Blocklist Enforce',
+      });
+      return stats;
+    }
+
+    stats.totalServers = radarrServers.length;
+
+    // Get all blacklisted movies from Seerr
+    const blacklistRepository = getRepository(Blacklist);
+    const blacklistedMovies = await blacklistRepository.find({
+      where: { mediaType: MediaType.MOVIE },
+      select: ['tmdbId', 'title', 'blacklistedTags'],
+    });
+
+    logger.info('Enforcing blacklist on Radarr servers', {
+      label: 'Blocklist Enforce',
+      serverCount: radarrServers.length,
+      blacklistedCount: blacklistedMovies.length,
+    });
+
+    const blacklistMap = new Map(
+      blacklistedMovies.map((item) => [item.tmdbId, item.title])
+    );
+
+    // Check each Radarr server
+    for (const server of radarrServers) {
+      try {
+        const radarr = new RadarrAPI({
+          apiKey: server.apiKey,
+          url: RadarrAPI.buildUrl(server, '/api/v3'),
+        });
+
+        const radarrMovies = await radarr.getMovies();
+        let removedCount = 0;
+
+        for (const movie of radarrMovies) {
+          if (movie.tmdbId && blacklistMap.has(movie.tmdbId)) {
+            const movieSize = movie.movieFile?.size || 0;
+            const sizeMB = (movieSize / 1024 / 1024).toFixed(2);
+            
+            // Safety: Skip recently added items (24-hour grace period)
+            const addedDate = new Date(movie.added);
+            const hoursSinceAdded = (Date.now() - addedDate.getTime()) / 1000 / 60 / 60;
+            
+            if (hoursSinceAdded < 24) {
+              logger.debug('Skipping recently added movie (grace period)', {
+                label: 'Blocklist Enforce',
+                title: movie.title,
+                tmdbId: movie.tmdbId,
+                hoursSinceAdded: hoursSinceAdded.toFixed(1),
+              });
+              continue;
+            }
+
+            // Phase 4: Delete the movie
+            try {
+              logger.warn('Removing blacklisted movie from Radarr', {
+                label: 'Blocklist Enforce',
+                serverName: server.name,
+                title: movie.title,
+                tmdbId: movie.tmdbId,
+                radarrId: movie.id,
+                sizeMB,
+                hoursSinceAdded: hoursSinceAdded.toFixed(1),
+                action: 'delete_files_and_entry',
+              });
+
+              // Delete via Radarr API
+              await radarr['axios'].delete(`/movie/${movie.id}`, {
+                params: {
+                  deleteFiles: true,
+                  addImportExclusion: false, // Don't re-add to Radarr's exclusion list
+                },
+              });
+
+              logger.info('Successfully removed movie from Radarr', {
+                label: 'Blocklist Enforce',
+                serverName: server.name,
+                title: movie.title,
+                tmdbId: movie.tmdbId,
+                radarrId: movie.id,
+                sizeMB,
+                bytesFreed: movieSize,
+                metric_enforcement_items_removed: 1,
+                metric_enforcement_bytes_freed: movieSize,
+              });
+            } catch (error) {
+              logger.error('Failed to remove movie from Radarr', {
+                label: 'Blocklist Enforce',
+                serverName: server.name,
+                title: movie.title,
+                tmdbId: movie.tmdbId,
+                radarrId: movie.id,
+                error: error.message,
+                metric_enforcement_errors: 1,
+              });
+              
+              stats.totalErrors++;
+              continue; // Continue with next movie even if one fails
+            }
+
+            removedCount++;
+            stats.totalRemoved++;
+          }
+        }
+
+        logger.info('Completed enforcement for Radarr server', {
+          label: 'Blocklist Enforce',
+          serverName: server.name,
+          removedCount,
+        });
+      } catch (error) {
+        logger.error('Error enforcing blacklist on Radarr', {
+          label: 'Blocklist Enforce',
+          serverName: server.name,
+          error: error.message,
+        });
+        stats.totalErrors++;
+      }
+    }
+
+    logger.info('Blacklist enforcement completed', {
+      label: 'Blocklist Enforce',
+      stats,
+    });
+
+    return stats;
+  }
 }
 
 const blocklistSyncService = new BlocklistSyncService();

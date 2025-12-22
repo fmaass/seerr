@@ -1,4 +1,5 @@
 import blocklistSyncService from '@server/lib/blocklistSync';
+import { getSettings } from '@server/lib/settings';
 import type { RunnableScanner, StatusBase } from '@server/lib/scanners/baseScanner';
 import logger from '@server/logger';
 
@@ -20,11 +21,15 @@ class BlocklistSyncJob implements RunnableScanner<StatusBase> {
         label: 'Jobs',
       });
 
-      // Sync both Radarr and Sonarr blocklists
+      // Sync both Radarr and Sonarr blocklists (Radarr/Sonarr → Seerr)
       await Promise.all([
         blocklistSyncService.syncAllRadarrServers(),
         blocklistSyncService.syncAllSonarrServers(),
       ]);
+
+      // Enforce Seerr blacklist on Radarr/Sonarr (Seerr → Radarr/Sonarr)
+      // If blocklistEnforceEnabled=true on a server, items WILL be deleted
+      await blocklistSyncService.enforceRadarrBlacklist();
 
       logger.info('Completed scheduled job: Blocklist Sync', {
         label: 'Jobs',

@@ -79,6 +79,11 @@ const messages = defineMessages('components.Settings.RadarrModal', {
   blocklistSyncInterval: 'Blocklist Sync Interval (minutes)',
   blocklistSyncIntervalTip:
     'How often to sync the blocklist from Radarr (default: 60 minutes)',
+  blocklistEnforceEnabled: 'Enable Two-Way Sync (Enforce Blacklist)',
+  blocklistEnforceEnabledTip:
+    'Remove blacklisted items from Radarr automatically. Items in Seerr blacklist will be deleted from Radarr.',
+  blocklistEnforceWarning:
+    '⚠️ Warning: This will automatically delete monitored items from Radarr if they are blacklisted in Seerr.',
 });
 
 interface RadarrModalProps {
@@ -245,6 +250,8 @@ const RadarrModal = ({ onClose, radarr, onSave }: RadarrModalProps) => {
             radarr?.blocklistSyncInterval ??
             mainSettings?.blocklistSyncInterval ??
             60,
+          blocklistEnforceEnabled: radarr?.blocklistEnforceEnabled ?? false,
+          blocklistEnforceMode: radarr?.blocklistEnforceMode ?? 'delete',
         }}
         validationSchema={RadarrSettingsSchema}
         onSubmit={async (values) => {
@@ -273,6 +280,8 @@ const RadarrModal = ({ onClose, radarr, onSave }: RadarrModalProps) => {
               tagRequests: values.tagRequests,
               blocklistSyncEnabled: values.blocklistSyncEnabled,
               blocklistSyncInterval: Number(values.blocklistSyncInterval),
+              blocklistEnforceEnabled: values.blocklistEnforceEnabled,
+              blocklistEnforceMode: values.blocklistEnforceMode,
             };
             if (!radarr) {
               await axios.post('/api/v1/settings/radarr', submission);
@@ -785,6 +794,26 @@ const RadarrModal = ({ onClose, radarr, onSave }: RadarrModalProps) => {
                     </div>
                   </div>
                 )}
+                <div className="form-row">
+                  <label htmlFor="blocklistEnforceEnabled" className="checkbox-label">
+                    {intl.formatMessage(messages.blocklistEnforceEnabled)}
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.blocklistEnforceEnabledTip)}
+                    </span>
+                    {values.blocklistEnforceEnabled && (
+                      <span className="label-tip text-yellow-500 font-bold">
+                        {intl.formatMessage(messages.blocklistEnforceWarning)}
+                      </span>
+                    )}
+                  </label>
+                  <div className="form-input-area">
+                    <Field
+                      type="checkbox"
+                      id="blocklistEnforceEnabled"
+                      name="blocklistEnforceEnabled"
+                    />
+                  </div>
+                </div>
               </div>
             </Modal>
           );

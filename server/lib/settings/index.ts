@@ -79,6 +79,8 @@ export interface DVRSettings {
   overrideRule: number[];
   blocklistSyncEnabled?: boolean;
   blocklistSyncInterval?: number;
+  blocklistEnforceEnabled?: boolean; // Enable enforcement (remove from Radarr/Sonarr)
+  blocklistEnforceMode?: 'delete'; // Only 'delete' mode supported for now
 }
 
 export interface RadarrSettings extends DVRSettings {
