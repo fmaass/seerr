@@ -13,6 +13,29 @@ import {
 } from '@server/lib/settings';
 import logger from '@server/logger';
 import { uniqWith } from 'lodash';
+import { register, Gauge, Counter } from 'prom-client';
+
+// Prometheus Metrics for Blocklist Enforcement
+const blocklistEnforcementGauge = new Gauge({
+  name: 'seerr_blocklist_enforcement_items_removed_total',
+  help: 'Total number of items removed by blocklist enforcement',
+  labelNames: ['server_type', 'server_name'],
+  registers: [register],
+});
+
+const blocklistEnforcementBytes = new Gauge({
+  name: 'seerr_blocklist_enforcement_bytes_freed',
+  help: 'Total bytes freed by blocklist enforcement',
+  labelNames: ['server_type', 'server_name'],
+  registers: [register],
+});
+
+const blocklistEnforcementErrors = new Counter({
+  name: 'seerr_blocklist_enforcement_errors_total',
+  help: 'Total errors during blocklist enforcement',
+  labelNames: ['server_type', 'server_name', 'error_type'],
+  registers: [register],
+});
 
 export interface SyncResult {
   serverName: string;
@@ -787,6 +810,20 @@ class BlocklistSyncService {
           if (movie.tmdbId && blacklistMap.has(movie.tmdbId)) {
             const movieSize = movie.movieFile?.size || 0;
             const sizeMB = (movieSize / 1024 / 1024).toFixed(2);
+            
+            // Safety: Skip recently added items (24-hour grace period)
+            const addedDate = new Date(movie.added);
+            const hoursSinceAdded = (Date.now() - addedDate.getTime()) / 1000 / 60 / 60;
+            
+            if (hoursSinceAdded < 24) {
+              logger.debug('Skipping recently added movie (grace period)', {
+                label: 'Blocklist Enforce',
+                title: movie.title,
+                tmdbId: movie.tmdbId,
+                hoursSinceAdded: hoursSinceAdded.toFixed(1),
+              });
+              continue;
+            }
 
             if (dryRun) {
               logger.info('[DRY RUN] Would remove movie from Radarr', {
@@ -797,12 +834,65 @@ class BlocklistSyncService {
                 radarrId: movie.id,
                 sizeMB,
                 monitored: movie.monitored,
+                hoursSinceAdded: hoursSinceAdded.toFixed(1),
               });
             } else {
-              // Actual deletion will be implemented in Phase 4
-              logger.warn('Live enforcement not yet implemented', {
-                label: 'Blocklist Enforce',
-              });
+              // Phase 4: Actual deletion
+              try {
+                logger.warn('Removing blacklisted movie from Radarr', {
+                  label: 'Blocklist Enforce',
+                  serverName: server.name,
+                  title: movie.title,
+                  tmdbId: movie.tmdbId,
+                  radarrId: movie.id,
+                  sizeMB,
+                  action: 'delete_files_and_entry',
+                });
+
+                await radarr.axios.delete(`/movie/${movie.id}`, {
+                  params: {
+                    deleteFiles: true,
+                    addImportExclusion: false, // Don't re-add to Radarr's exclusion list
+                  },
+                });
+
+                logger.info('Successfully removed movie from Radarr', {
+                  label: 'Blocklist Enforce',
+                  serverName: server.name,
+                  title: movie.title,
+                  tmdbId: movie.tmdbId,
+                  radarrId: movie.id,
+                });
+
+                // Update Prometheus metrics
+                blocklistEnforcementGauge.inc({
+                  server_type: 'radarr',
+                  server_name: server.name,
+                }, 1);
+                blocklistEnforcementBytes.inc({
+                  server_type: 'radarr',
+                  server_name: server.name,
+                }, movieSize);
+              } catch (error) {
+                logger.error('Failed to remove movie from Radarr', {
+                  label: 'Blocklist Enforce',
+                  serverName: server.name,
+                  title: movie.title,
+                  tmdbId: movie.tmdbId,
+                  radarrId: movie.id,
+                  error: error.message,
+                });
+                
+                // Record error in metrics
+                blocklistEnforcementErrors.inc({
+                  server_type: 'radarr',
+                  server_name: server.name,
+                  error_type: error.code || 'unknown',
+                });
+                
+                stats.totalErrors++;
+                continue; // Continue with next movie even if one fails
+              }
             }
 
             removedCount++;
