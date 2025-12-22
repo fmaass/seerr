@@ -20,11 +20,15 @@ class BlocklistSyncJob implements RunnableScanner<StatusBase> {
         label: 'Jobs',
       });
 
-      // Sync both Radarr and Sonarr blocklists
+      // Sync both Radarr and Sonarr blocklists (Radarr/Sonarr → Seerr)
       await Promise.all([
         blocklistSyncService.syncAllRadarrServers(),
         blocklistSyncService.syncAllSonarrServers(),
       ]);
+
+      // Enforce Seerr blacklist on Radarr/Sonarr (Seerr → Radarr/Sonarr)
+      // Phase 3: DRY RUN mode only
+      await blocklistSyncService.enforceRadarrBlacklist(true); // dryRun=true
 
       logger.info('Completed scheduled job: Blocklist Sync', {
         label: 'Jobs',

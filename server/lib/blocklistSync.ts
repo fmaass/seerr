@@ -692,6 +692,123 @@ class BlocklistSyncService {
 
     return true; // New entry added
   }
+  /**
+   * Enforce Seerr blacklist on Radarr (DRY RUN - logs only)
+   * Finds movies in Radarr that are blacklisted in Seerr
+   */
+  public async enforceRadarrBlacklist(dryRun: boolean = true): Promise<SyncStats> {
+    const settings = getSettings();
+    const stats: SyncStats = {
+      totalServers: 0,
+      totalItems: 0,
+      totalAdded: 0,
+      totalUpdated: 0,
+      totalRemoved: 0,
+      totalErrors: 0,
+    };
+
+    // Get servers with enforcement enabled
+    const radarrServers = uniqWith(
+      settings.radarr.filter(
+        (server) =>
+          server.syncEnabled !== false &&
+          server.blocklistEnforceEnabled === true
+      ),
+      (a, b) =>
+        a.hostname === b.hostname &&
+        a.port === b.port &&
+        a.baseUrl === b.baseUrl
+    );
+
+    if (radarrServers.length === 0) {
+      logger.debug('No Radarr servers with enforcement enabled', {
+        label: 'Blocklist Enforce',
+      });
+      return stats;
+    }
+
+    stats.totalServers = radarrServers.length;
+
+    // Get all blacklisted movies from Seerr
+    const blacklistRepository = getRepository(Blacklist);
+    const blacklistedMovies = await blacklistRepository.find({
+      where: { mediaType: MediaType.MOVIE },
+      select: ['tmdbId', 'title', 'blacklistedTags'],
+    });
+
+    logger.info('Enforcing blacklist on Radarr servers', {
+      label: 'Blocklist Enforce',
+      serverCount: radarrServers.length,
+      blacklistedCount: blacklistedMovies.length,
+      dryRun,
+    });
+
+    const blacklistMap = new Map(
+      blacklistedMovies.map((item) => [item.tmdbId, item.title])
+    );
+
+    // Check each Radarr server
+    for (const server of radarrServers) {
+      try {
+        const radarr = new RadarrAPI({
+          apiKey: server.apiKey,
+          url: RadarrAPI.buildUrl(server, '/api/v3'),
+        });
+
+        const radarrMovies = await radarr.getMovies();
+        let removedCount = 0;
+
+        for (const movie of radarrMovies) {
+          if (movie.tmdbId && blacklistMap.has(movie.tmdbId)) {
+            const movieSize = movie.movieFile?.size || 0;
+            const sizeMB = (movieSize / 1024 / 1024).toFixed(2);
+
+            if (dryRun) {
+              logger.info('[DRY RUN] Would remove movie from Radarr', {
+                label: 'Blocklist Enforce',
+                serverName: server.name,
+                title: movie.title,
+                tmdbId: movie.tmdbId,
+                radarrId: movie.id,
+                sizeMB,
+                monitored: movie.monitored,
+              });
+            } else {
+              // Actual deletion will be implemented in Phase 4
+              logger.warn('Live enforcement not yet implemented', {
+                label: 'Blocklist Enforce',
+              });
+            }
+
+            removedCount++;
+            stats.totalRemoved++;
+          }
+        }
+
+        logger.info('Completed enforcement for Radarr server', {
+          label: 'Blocklist Enforce',
+          serverName: server.name,
+          removedCount,
+          dryRun,
+        });
+      } catch (error) {
+        logger.error('Error enforcing blacklist on Radarr', {
+          label: 'Blocklist Enforce',
+          serverName: server.name,
+          error: error.message,
+        });
+        stats.totalErrors++;
+      }
+    }
+
+    logger.info('Blacklist enforcement completed', {
+      label: 'Blocklist Enforce',
+      stats,
+      dryRun,
+    });
+
+    return stats;
+  }
 }
 
 const blocklistSyncService = new BlocklistSyncService();
