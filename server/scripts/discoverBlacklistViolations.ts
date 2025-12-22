@@ -396,13 +396,23 @@ class BlacklistDiscovery {
 
 // Main execution
 async function main() {
-  const discovery = new BlacklistDiscovery();
-
   logger.info('Starting blacklist violation discovery', {
     label: 'Blacklist Discovery',
   });
 
   try {
+    // Initialize database connection
+    const dataSource = (await import('@server/datasource')).default;
+    
+    if (!dataSource.isInitialized) {
+      logger.info('Initializing database connection', {
+        label: 'Blacklist Discovery',
+      });
+      await dataSource.initialize();
+    }
+
+    const discovery = new BlacklistDiscovery();
+
     // Discover violations
     const radarrViolations = await discovery.discoverRadarrViolations();
     const sonarrViolations = await discovery.discoverSonarrViolations();
@@ -415,11 +425,14 @@ async function main() {
       label: 'Blacklist Discovery',
     });
 
+    // Close database connection
+    await dataSource.destroy();
     process.exit(0);
   } catch (error) {
     logger.error('Discovery failed', {
       label: 'Blacklist Discovery',
       error: error.message,
+      stack: error.stack,
     });
     process.exit(1);
   }
