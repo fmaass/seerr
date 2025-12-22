@@ -702,9 +702,8 @@ class BlocklistSyncService {
       dryRun,
     });
 
-    // Reload settings to get latest configuration
+    // Get settings (already loaded by main app)
     const settings = getSettings();
-    await settings.load();
     const stats: SyncStats = {
       totalServers: 0,
       totalItems: 0,
