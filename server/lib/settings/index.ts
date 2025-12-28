@@ -586,6 +586,9 @@ class Settings {
         'blocklist-sync': {
           schedule: '0 0 * * * *', // Every hour at minute 0
         },
+        'auto-delete-expired': {
+          schedule: '0 0 3 * * *', // Daily at 3 AM
+        },
       },
       network: {
         csrfProtection: false,
