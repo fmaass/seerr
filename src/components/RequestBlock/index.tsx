@@ -56,9 +56,6 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
   const { profile, rootFolder, server, languageProfile } =
     useRequestOverride(request);
 
-  const [showAutoDeleteModal, setShowAutoDeleteModal] = useState(false);
-  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(30);
-
   const updateRequest = async (type: 'approve' | 'decline'): Promise<void> => {
     setIsUpdating(true);
     await axios.post(`/api/v1/request/${request.id}/${type}`);
