@@ -353,7 +353,8 @@ export type JobId =
   | 'image-cache-cleanup'
   | 'availability-sync'
   | 'process-blacklisted-tags'
-  | 'blocklist-sync';
+  | 'blocklist-sync'
+  | 'auto-delete-expired';
 
 export interface AllSettings {
   clientId: string;
@@ -584,6 +585,9 @@ class Settings {
         },
         'blocklist-sync': {
           schedule: '0 0 * * * *', // Every hour at minute 0
+        },
+        'auto-delete-expired': {
+          schedule: '0 0 3 * * *', // Daily at 3 AM
         },
       },
       network: {

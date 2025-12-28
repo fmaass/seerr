@@ -26,8 +26,11 @@ import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { isAuthenticated } from '@server/middleware/auth';
 import { Router } from 'express';
+import autoDeleteRoutes from './request/autoDelete';
 
 const requestRoutes = Router();
+
+requestRoutes.use('/', autoDeleteRoutes);
 
 requestRoutes.get<Record<string, unknown>, RequestResultsResponse>(
   '/',
@@ -664,6 +667,21 @@ requestRoutes.post<{
           break;
         case 'approve':
           newStatus = MediaRequestStatus.APPROVED;
+          
+          // Handle auto-delete if specified
+          if (req.body.autoDeleteAfterDays && req.body.autoDeleteAfterDays > 0) {
+            const daysToAdd = Number(req.body.autoDeleteAfterDays);
+            const autoDeleteDate = new Date();
+            autoDeleteDate.setDate(autoDeleteDate.getDate() + daysToAdd);
+            request.autoDeleteDate = autoDeleteDate;
+
+            logger.info('Request approved with auto-delete', {
+              label: 'Media Request',
+              requestId: request.id,
+              autoDeleteAfterDays: daysToAdd,
+              autoDeleteDate: autoDeleteDate.toISOString(),
+            });
+          }
           break;
         case 'decline':
           newStatus = MediaRequestStatus.DECLINED;
