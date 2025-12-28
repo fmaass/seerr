@@ -359,8 +359,9 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
         onCancel={() => setShowAutoDeleteModal(false)}
         onOk={() => approveWithAutoDelete()}
         okText="Approve"
-        okButtonType="success"
-        show={showAutoDeleteModal}
+        okButtonType="primary"
+        loading={isUpdating}
+        backgroundClickable={false}
       >
         <div className="section">
           <div className="form-row">
