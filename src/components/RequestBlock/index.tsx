@@ -81,20 +81,6 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
     setShowAutoDeleteModal(false);
   };
 
-  const approveWithAutoDelete = async (): Promise<void> => {
-    setIsUpdating(true);
-    await axios.post(`/api/v1/request/${request.id}/approve`, {
-      autoDeleteAfterDays: autoDeleteDays,
-    });
-
-    if (onUpdate) {
-      onUpdate();
-      mutate('/api/v1/request/count');
-    }
-    setIsUpdating(false);
-    setShowAutoDeleteModal(false);
-  };
-
   const deleteRequest = async () => {
     setIsUpdating(true);
     await axios.delete(`/api/v1/request/${request.id}`);
