@@ -659,6 +659,9 @@ export class MediaRequest {
   @Column({ default: false })
   public isAutoRequest: boolean;
 
+  @DbAwareColumn({ type: 'datetime', nullable: true })
+  public autoDeleteDate?: Date;
+
   constructor(init?: Partial<MediaRequest>) {
     Object.assign(this, init);
   }
