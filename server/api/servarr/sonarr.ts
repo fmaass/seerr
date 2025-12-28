@@ -400,6 +400,20 @@ class SonarrAPI extends ServarrBase<{
     }
   };
 
+  public deleteImportExclusion = async (exclusionId: number): Promise<void> => {
+    try {
+      await this.axios.delete(`/importlistexclusion/${exclusionId}`);
+      logger.info('Removed import exclusion from Sonarr', {
+        label: 'Sonarr API',
+        exclusionId,
+      });
+    } catch (e) {
+      throw new Error(
+        `[Sonarr] Failed to delete import exclusion: ${e.message}`
+      );
+    }
+  };
+
   public async isSeriesBlocklisted(tvdbId: number): Promise<boolean> {
     try {
       const exclusions = await this.getImportExclusions();

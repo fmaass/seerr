@@ -298,6 +298,20 @@ class RadarrAPI extends ServarrBase<{ movieId: number }> {
     }
   };
 
+  public deleteImportExclusion = async (exclusionId: number): Promise<void> => {
+    try {
+      await this.axios.delete(`/exclusions/${exclusionId}`);
+      logger.info('Removed import exclusion from Radarr', {
+        label: 'Radarr API',
+        exclusionId,
+      });
+    } catch (e) {
+      throw new Error(
+        `[Radarr] Failed to delete import exclusion: ${e.message}`
+      );
+    }
+  };
+
   public async isMovieBlocklisted(tmdbId: number): Promise<boolean> {
     try {
       const exclusions = await this.getImportExclusions();
