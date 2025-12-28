@@ -557,6 +557,20 @@ export class MediaRequest {
         isAutoRequest: options.isAutoRequest ?? false,
       });
 
+      // Handle auto-delete if specified
+      if (requestBody.autoDeleteDays && requestBody.autoDeleteDays > 0) {
+        const autoDeleteDate = new Date();
+        autoDeleteDate.setDate(autoDeleteDate.getDate() + requestBody.autoDeleteDays);
+        request.autoDeleteDate = autoDeleteDate;
+
+        logger.info('Request created with auto-delete', {
+          label: 'Media Request',
+          tmdbId: requestBody.mediaId,
+          autoDeleteDays: requestBody.autoDeleteDays,
+          autoDeleteDate: autoDeleteDate.toISOString(),
+        });
+      }
+
       await requestRepository.save(request);
       return request;
     }
