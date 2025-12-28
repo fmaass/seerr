@@ -945,21 +945,8 @@ class BlocklistSyncService {
           // 1. NOT in Seerr blacklist anymore, AND
           // 2. Was originally synced from this Radarr server (has radarr-sync tag)
           if (!blacklistEntry) {
-            // Not in blacklist, but check if it was synced from Radarr
-            // We only remove exclusions that we created via sync
-            // Check old blacklist entries to see if this was synced
-            const wasOriginallyBlacklisted = await blacklistRepository.findOne({
-              where: {
-                tmdbId: exclusion.tmdbId,
-                mediaType: MediaType.MOVIE,
-              },
-              withDeleted: true, // Check even deleted entries if supported
-            });
-
-            // If we never tracked this, skip (might be manually added in Radarr)
-            if (!wasOriginallyBlacklisted?.blacklistedTags?.startsWith('radarr-sync-')) {
-              continue;
-            }
+            // Not in blacklist anymore - remove from Radarr exclusions
+            // This allows the movie to be re-requested in Seerr
 
             // Remove from Radarr exclusions
             logger.info('Removing exclusion from Radarr (no longer blacklisted in Seerr)', {
