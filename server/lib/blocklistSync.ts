@@ -871,6 +871,133 @@ class BlocklistSyncService {
 
     return stats;
   }
+
+  /**
+   * Sync Seerr blacklist removals back to Radarr
+   * Remove exclusions from Radarr that are no longer blacklisted in Seerr
+   * This allows re-requesting previously blacklisted movies
+   */
+  public async syncRadarrExclusionRemovals(): Promise<SyncStats> {
+    logger.info('Syncing blacklist removals to Radarr', {
+      label: 'Blocklist Sync Removals',
+    });
+
+    const settings = getSettings();
+    const stats: SyncStats = {
+      totalServers: 0,
+      totalItems: 0,
+      totalAdded: 0,
+      totalUpdated: 0,
+      totalRemoved: 0,
+      totalErrors: 0,
+    };
+
+    const radarrServers = uniqWith(
+      settings.radarr.filter((server) => server.syncEnabled !== false),
+      (a, b) =>
+        a.hostname === b.hostname &&
+        a.port === b.port &&
+        a.baseUrl === b.baseUrl
+    );
+
+    if (radarrServers.length === 0) {
+      logger.debug('No Radarr servers configured for exclusion removal sync', {
+        label: 'Blocklist Sync Removals',
+      });
+      return stats;
+    }
+
+    stats.totalServers = radarrServers.length;
+
+    // Get current Seerr blacklist
+    const blacklistRepository = getRepository(Blacklist);
+    const blacklistedMovies = await blacklistRepository.find({
+      where: { mediaType: MediaType.MOVIE },
+      select: ['tmdbId', 'blacklistedTags'],
+    });
+
+    const blacklistMap = new Map(
+      blacklistedMovies.map((item) => [item.tmdbId, item.blacklistedTags])
+    );
+
+    logger.info('Checking Radarr exclusions against Seerr blacklist', {
+      label: 'Blocklist Sync Removals',
+      blacklistedCount: blacklistedMovies.length,
+      serverCount: radarrServers.length,
+    });
+
+    // Check each Radarr server
+    for (const server of radarrServers) {
+      try {
+        const radarr = new RadarrAPI({
+          apiKey: server.apiKey,
+          url: RadarrAPI.buildUrl(server, '/api/v3'),
+        });
+
+        const exclusions = await radarr.getImportExclusions();
+        let removedCount = 0;
+
+        for (const exclusion of exclusions) {
+          // Check if this exclusion is in Seerr blacklist
+          const blacklistEntry = blacklistMap.get(exclusion.tmdbId);
+
+          // Only remove if:
+          // 1. NOT in Seerr blacklist anymore, AND
+          // 2. Was originally synced from this Radarr server (has radarr-sync tag)
+          if (!blacklistEntry) {
+            // Not in blacklist, but check if it was synced from Radarr
+            // We only remove exclusions that we created via sync
+            // Check old blacklist entries to see if this was synced
+            const wasOriginallyBlacklisted = await blacklistRepository.findOne({
+              where: {
+                tmdbId: exclusion.tmdbId,
+                mediaType: MediaType.MOVIE,
+              },
+              withDeleted: true, // Check even deleted entries if supported
+            });
+
+            // If we never tracked this, skip (might be manually added in Radarr)
+            if (!wasOriginallyBlacklisted?.blacklistedTags?.startsWith('radarr-sync-')) {
+              continue;
+            }
+
+            // Remove from Radarr exclusions
+            logger.info('Removing exclusion from Radarr (no longer blacklisted in Seerr)', {
+              label: 'Blocklist Sync Removals',
+              serverName: server.name,
+              title: exclusion.movieTitle,
+              tmdbId: exclusion.tmdbId,
+              exclusionId: exclusion.id,
+            });
+
+            await radarr.deleteImportExclusion(exclusion.id);
+            removedCount++;
+            stats.totalRemoved++;
+          }
+        }
+
+        logger.info('Completed exclusion removal sync for Radarr server', {
+          label: 'Blocklist Sync Removals',
+          serverName: server.name,
+          removedCount,
+        });
+      } catch (error) {
+        logger.error('Error syncing exclusion removals from Radarr', {
+          label: 'Blocklist Sync Removals',
+          serverName: server.name,
+          error: error.message,
+        });
+        stats.totalErrors++;
+      }
+    }
+
+    logger.info('Exclusion removal sync completed', {
+      label: 'Blocklist Sync Removals',
+      stats,
+    });
+
+    return stats;
+  }
 }
 
 const blocklistSyncService = new BlocklistSyncService();

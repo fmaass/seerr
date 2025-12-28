@@ -21,15 +21,19 @@ class BlocklistSyncJob implements RunnableScanner<StatusBase> {
         label: 'Jobs',
       });
 
-      // Sync both Radarr and Sonarr blocklists (Radarr/Sonarr → Seerr)
+      // Direction 1: Radarr/Sonarr exclusions → Seerr blacklist
       await Promise.all([
         blocklistSyncService.syncAllRadarrServers(),
         blocklistSyncService.syncAllSonarrServers(),
       ]);
 
-      // Enforce Seerr blacklist on Radarr/Sonarr (Seerr → Radarr/Sonarr)
+      // Direction 2: Seerr blacklist → Remove from Radarr/Sonarr library
       // If blocklistEnforceEnabled=true on a server, items WILL be deleted
       await blocklistSyncService.enforceRadarrBlacklist();
+
+      // Direction 3: Seerr blacklist removals → Remove from Radarr/Sonarr exclusions
+      // This allows re-requesting previously blacklisted items
+      await blocklistSyncService.syncRadarrExclusionRemovals();
 
       logger.info('Completed scheduled job: Blocklist Sync', {
         label: 'Jobs',
