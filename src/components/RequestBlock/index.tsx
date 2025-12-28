@@ -354,43 +354,45 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
       </div>
 
       {/* Auto-Delete Modal */}
-      <Modal
-        title="Approve with Auto-Delete"
-        onCancel={() => setShowAutoDeleteModal(false)}
-        onOk={() => approveWithAutoDelete()}
-        okText="Approve"
-        okButtonType="primary"
-        loading={isUpdating}
-        backgroundClickable={false}
-      >
-        <div className="section">
-          <div className="form-row">
-            <label htmlFor="autoDeleteDays" className="text-label">
-              Auto-delete after (days):
-              <span className="label-tip">
-                Media will be automatically removed after this many days
-              </span>
-            </label>
-            <div className="form-input-area">
-              <select
-                id="autoDeleteDays"
-                value={autoDeleteDays}
-                onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
-                className="rounded-md"
-              >
-                <option value={7}>7 days</option>
-                <option value={30}>30 days</option>
-                <option value={60}>60 days</option>
-                <option value={90}>90 days</option>
-              </select>
+      {showAutoDeleteModal && (
+        <Modal
+          title="Approve with Auto-Delete"
+          onCancel={() => setShowAutoDeleteModal(false)}
+          onOk={() => approveWithAutoDelete()}
+          okText="Approve"
+          okButtonType="primary"
+          loading={isUpdating}
+          backgroundClickable={false}
+        >
+          <div className="section">
+            <div className="form-row">
+              <label htmlFor="autoDeleteDays" className="text-label">
+                Auto-delete after (days):
+                <span className="label-tip">
+                  Media will be automatically removed after this many days
+                </span>
+              </label>
+              <div className="form-input-area">
+                <select
+                  id="autoDeleteDays"
+                  value={autoDeleteDays}
+                  onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
+                  className="rounded-md"
+                >
+                  <option value={7}>7 days</option>
+                  <option value={30}>30 days</option>
+                  <option value={60}>60 days</option>
+                  <option value={90}>90 days</option>
+                </select>
+              </div>
+            </div>
+            <div className="mt-4 text-sm text-yellow-500">
+              ⚠️ This media will be automatically deleted from Radarr/Sonarr after{' '}
+              {autoDeleteDays} days
             </div>
           </div>
-          <div className="mt-4 text-sm text-yellow-500">
-            ⚠️ This media will be automatically deleted from Radarr/Sonarr after{' '}
-            {autoDeleteDays} days
-          </div>
-        </div>
-      </Modal>
+        </Modal>
+      )}
     </div>
   );
 };
