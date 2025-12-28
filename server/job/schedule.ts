@@ -1,4 +1,5 @@
 import { MediaServerType } from '@server/constants/server';
+import autoDeleteExpiredJob from '@server/job/autoDeleteExpired';
 import blacklistedTagsProcessor from '@server/job/blacklistedTagsProcessor';
 import blocklistSyncJob from '@server/job/blocklistSync';
 import availabilitySync from '@server/lib/availabilitySync';
@@ -302,6 +303,23 @@ export const startJobs = (): void => {
       blocklistSyncInterval,
     });
   }
+
+  // Auto-delete expired media (runs daily at 3 AM)
+  scheduledJobs.push({
+    id: 'auto-delete-expired',
+    name: 'Auto-Delete Expired Media',
+    type: 'process',
+    interval: 'days',
+    cronSchedule: jobs['auto-delete-expired'].schedule,
+    job: schedule.scheduleJob(jobs['auto-delete-expired'].schedule, () => {
+      logger.info('Starting scheduled job: Auto-Delete Expired Media', {
+        label: 'Jobs',
+      });
+      autoDeleteExpiredJob.run();
+    }),
+    running: () => autoDeleteExpiredJob.status().running,
+    cancelFn: () => autoDeleteExpiredJob.cancel(),
+  });
 
   logger.info('Scheduled jobs loaded', { label: 'Jobs' });
 };

@@ -353,7 +353,8 @@ export type JobId =
   | 'image-cache-cleanup'
   | 'availability-sync'
   | 'process-blacklisted-tags'
-  | 'blocklist-sync';
+  | 'blocklist-sync'
+  | 'auto-delete-expired';
 
 export interface AllSettings {
   clientId: string;
