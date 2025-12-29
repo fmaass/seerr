@@ -693,8 +693,9 @@ class BlocklistSyncService {
     return true; // New entry added
   }
   /**
-   * Enforce Seerr blacklist on Radarr
-   * Finds and removes movies in Radarr that are blacklisted in Seerr
+   * Enforce Radarr exclusions on Radarr library
+   * Finds and removes movies in Radarr that are in Radarr's exclusion list
+   * This is the source of truth - Radarr exclusions define what should NOT be in the library
    */
   public async enforceRadarrBlacklist(): Promise<SyncStats> {
     logger.info('enforceRadarrBlacklist called', {
@@ -753,23 +754,6 @@ class BlocklistSyncService {
 
     stats.totalServers = radarrServers.length;
 
-    // Get all blacklisted movies from Seerr
-    const blacklistRepository = getRepository(Blacklist);
-    const blacklistedMovies = await blacklistRepository.find({
-      where: { mediaType: MediaType.MOVIE },
-      select: ['tmdbId', 'title', 'blacklistedTags'],
-    });
-
-    logger.info('Enforcing blacklist on Radarr servers', {
-      label: 'Blocklist Enforce',
-      serverCount: radarrServers.length,
-      blacklistedCount: blacklistedMovies.length,
-    });
-
-    const blacklistMap = new Map(
-      blacklistedMovies.map((item) => [item.tmdbId, item.title])
-    );
-
     // Check each Radarr server
     for (const server of radarrServers) {
       try {
@@ -778,11 +762,27 @@ class BlocklistSyncService {
           url: RadarrAPI.buildUrl(server, '/api/v3'),
         });
 
+        // Get exclusions from Radarr (source of truth for what should NOT be in library)
+        const exclusions = await radarr.getImportExclusions();
+        
+        logger.info('Enforcing Radarr exclusions on library', {
+          label: 'Blocklist Enforce',
+          serverName: server.name,
+          exclusionCount: exclusions.length,
+        });
+
+        // Build map of excluded TMDB IDs
+        const excludedTmdbIds = new Set(
+          exclusions.map((exclusion) => exclusion.tmdbId)
+        );
+
+        // Get all movies from Radarr
         const radarrMovies = await radarr.getMovies();
         let removedCount = 0;
 
+        // Delete any movie that's in the exclusion list
         for (const movie of radarrMovies) {
-          if (movie.tmdbId && blacklistMap.has(movie.tmdbId)) {
+          if (movie.tmdbId && excludedTmdbIds.has(movie.tmdbId)) {
             const movieSize = movie.movieFile?.size || 0;
             const sizeMB = (movieSize / 1024 / 1024).toFixed(2);
             
