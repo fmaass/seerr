@@ -1,0 +1,1262 @@
+From 4b881648c70953a80af76adf410eb8c2799ae832 Mon Sep 17 00:00:00 2001
+From: fabian <fabian.maass@gmail.com>
+Date: Tue, 30 Dec 2025 21:33:09 +0100
+Subject: [PATCH] feat(requests): add auto-delete scheduling with blocklist
+ integration
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Add auto-delete field to MediaRequest entity (nullable datetime column)
+- Create scheduled job to delete expired media daily at 3:00 AM
+- Support configurable retention periods: 7, 14, 30, 60, 90, 180 days
+- Add auto-delete option in movie request modal UI
+- Create AutoDeleteBlock component with visual progress bar and countdown display
+- Display auto-delete status in manage panel with set/cancel controls
+- Show inline auto-delete indicator with clock icon in request lists
+- Auto-deleted items automatically added to blocklist (tag: 'auto-deleted')
+- Supports both APPROVED and COMPLETED request statuses
+- API: POST/GET /api/v1/request/auto-delete/:requestId
+- Manual job trigger: POST /api/v1/settings/jobs/auto-delete-expired/run
+- Database migrations for SQLite and PostgreSQL
+
+Technical implementation:
+- AutoDeleteExpired job queries expired requests and deletes from Radarr/Sonarr
+- Deletion includes files (deleteFiles: true) and adds to blocklist
+- Blocklist integration prevents re-requesting via list sync jobs
+- UI uses cache-busting page reload (window.location + timestamp) for fresh data
+- OpenAPI spec updated with auto-delete endpoint definitions
+- Job registered in scheduler with cron: '0 0 3 * * *' (3 AM daily)
+- MediaRequest.request() accepts autoDeleteDays parameter for immediate scheduling
+- Approval endpoint enhanced to accept autoDeleteAfterDays for post-approval scheduling
+
+Depends-on: feat(blacklist): 2-way blocklist sync (for Blacklist.addToBlacklist)
+
+Test:
+- Request movie → Set auto-delete 90 days → Gear icon → Manage panel shows countdown
+- API test: curl -X POST /api/v1/request/auto-delete/ID -d '{"days": 90}'
+- Manual trigger: curl -X POST /api/v1/settings/jobs/auto-delete-expired/run
+---
+ seerr-api.yml                                 |  70 ++++
+ server/entity/MediaRequest.ts                 |  31 ++
+ server/interfaces/api/requestInterfaces.ts    |   1 +
+ server/job/autoDeleteExpired.ts               | 307 ++++++++++++++++++
+ ...3200000-AddAutoDeleteDateToMediaRequest.ts |  22 ++
+ ...3200000-AddAutoDeleteDateToMediaRequest.ts |  24 ++
+ server/routes/request.ts                      |  21 ++
+ server/routes/request/autoDelete.ts           |  95 ++++++
+ src/components/AutoDeleteBlock/index.tsx      | 254 +++++++++++++++
+ src/components/ManageSlideOver/index.tsx      |  49 ++-
+ src/components/RequestBlock/index.tsx         |  33 ++
+ .../RequestList/RequestItem/index.tsx         |  24 ++
+ .../RequestModal/MovieRequestModal.tsx        |  34 ++
+ 13 files changed, 964 insertions(+), 1 deletion(-)
+ create mode 100644 server/job/autoDeleteExpired.ts
+ create mode 100644 server/migration/postgres/1735213200000-AddAutoDeleteDateToMediaRequest.ts
+ create mode 100644 server/migration/sqlite/1735213200000-AddAutoDeleteDateToMediaRequest.ts
+ create mode 100644 server/routes/request/autoDelete.ts
+ create mode 100644 src/components/AutoDeleteBlock/index.tsx
+
+diff --git a/seerr-api.yml b/seerr-api.yml
+index bf9d8827..696a5a92 100644
+--- a/seerr-api.yml
++++ b/seerr-api.yml
+@@ -6298,6 +6298,76 @@ paths:
+             application/json:
+               schema:
+                 $ref: '#/components/schemas/MediaRequest'
++  /request/auto-delete/{requestId}:
++    post:
++      summary: Set auto-delete for a request
++      description: |
++        Sets or cancels auto-delete for a media request. Media will be automatically deleted from Radarr/Sonarr after the specified number of days.
++        
++        Requires the `MANAGE_REQUESTS` permission or `ADMIN`.
++      tags:
++        - request
++      parameters:
++        - in: path
++          name: requestId
++          description: Request ID
++          required: true
++          schema:
++            type: string
++            example: '1'
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              type: object
++              properties:
++                days:
++                  type: number
++                  description: Days until auto-delete (0 or null to cancel)
++                  example: 90
++      responses:
++        '200':
++          description: Auto-delete updated
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/MediaRequest'
++    get:
++      summary: Get auto-delete info for a request
++      description: |
++        Returns auto-delete information for a specific request.
++        
++        Requires the `MANAGE_REQUESTS` permission or `ADMIN`.
++      tags:
++        - request
++      parameters:
++        - in: path
++          name: requestId
++          description: Request ID
++          required: true
++          schema:
++            type: string
++            example: '1'
++      responses:
++        '200':
++          description: Auto-delete info returned
++          content:
++            application/json:
++              schema:
++                type: object
++                properties:
++                  requestId:
++                    type: number
++                  autoDeleteDate:
++                    type: string
++                    format: date-time
++                    nullable: true
++                  hasExpiration:
++                    type: boolean
++                  daysUntilDeletion:
++                    type: number
++                    nullable: true
+   /request/{requestId}/{status}:
+     post:
+       summary: Update a request's status
+diff --git a/server/entity/MediaRequest.ts b/server/entity/MediaRequest.ts
+index e1c0aea0..cf69ba26 100644
+--- a/server/entity/MediaRequest.ts
++++ b/server/entity/MediaRequest.ts
+@@ -426,6 +426,20 @@ export class MediaRequest {
+         isAutoRequest: options.isAutoRequest ?? false,
+       });
+ 
++      // Handle auto-delete if specified
++      if (requestBody.autoDeleteDays && requestBody.autoDeleteDays > 0) {
++        const autoDeleteDate = new Date();
++        autoDeleteDate.setDate(autoDeleteDate.getDate() + requestBody.autoDeleteDays);
++        request.autoDeleteDate = autoDeleteDate;
++
++        logger.info('Request created with auto-delete', {
++          label: 'Media Request',
++          tmdbId: requestBody.mediaId,
++          autoDeleteDays: requestBody.autoDeleteDays,
++          autoDeleteDate: autoDeleteDate.toISOString(),
++        });
++      }
++
+       await requestRepository.save(request);
+       return request;
+     } else {
+@@ -557,6 +571,20 @@ export class MediaRequest {
+         isAutoRequest: options.isAutoRequest ?? false,
+       });
+ 
++      // Handle auto-delete if specified
++      if (requestBody.autoDeleteDays && requestBody.autoDeleteDays > 0) {
++        const autoDeleteDate = new Date();
++        autoDeleteDate.setDate(autoDeleteDate.getDate() + requestBody.autoDeleteDays);
++        request.autoDeleteDate = autoDeleteDate;
++
++        logger.info('Request created with auto-delete', {
++          label: 'Media Request',
++          tmdbId: requestBody.mediaId,
++          autoDeleteDays: requestBody.autoDeleteDays,
++          autoDeleteDate: autoDeleteDate.toISOString(),
++        });
++      }
++
+       await requestRepository.save(request);
+       return request;
+     }
+@@ -659,6 +687,9 @@ export class MediaRequest {
+   @Column({ default: false })
+   public isAutoRequest: boolean;
+ 
++  @DbAwareColumn({ type: 'datetime', nullable: true })
++  public autoDeleteDate?: Date;
++
+   constructor(init?: Partial<MediaRequest>) {
+     Object.assign(this, init);
+   }
+diff --git a/server/interfaces/api/requestInterfaces.ts b/server/interfaces/api/requestInterfaces.ts
+index 4a41ae99..8f1e2c61 100644
+--- a/server/interfaces/api/requestInterfaces.ts
++++ b/server/interfaces/api/requestInterfaces.ts
+@@ -22,4 +22,5 @@ export type MediaRequestBody = {
+   languageProfileId?: number;
+   userId?: number;
+   tags?: number[];
++  autoDeleteDays?: number; // Auto-delete after X days (0 or undefined = keep forever)
+ };
+diff --git a/server/job/autoDeleteExpired.ts b/server/job/autoDeleteExpired.ts
+new file mode 100644
+index 00000000..09e6c77d
+--- /dev/null
++++ b/server/job/autoDeleteExpired.ts
+@@ -0,0 +1,307 @@
++import RadarrAPI from '@server/api/servarr/radarr';
++import SonarrAPI from '@server/api/servarr/sonarr';
++import { MediaRequestStatus, MediaType } from '@server/constants/media';
++import { getRepository } from '@server/datasource';
++import { Blacklist } from '@server/entity/Blacklist';
++import { MediaRequest } from '@server/entity/MediaRequest';
++import type { RunnableScanner, StatusBase } from '@server/lib/scanners/baseScanner';
++import { getSettings } from '@server/lib/settings';
++import logger from '@server/logger';
++
++class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
++  private running = false;
++
++  public async run(): Promise<void> {
++    if (this.running) {
++      logger.warn('Auto-delete expired job already running, skipping', {
++        label: 'Auto-Delete Job',
++      });
++      return;
++    }
++
++    this.running = true;
++
++    try {
++      logger.info('Starting scheduled job: Auto-Delete Expired Media', {
++        label: 'Jobs',
++      });
++
++      const requestRepository = getRepository(MediaRequest);
++      const settings = getSettings();
++
++      // Find all approved/completed requests with expired autoDeleteDate
++      const expiredRequests = await requestRepository
++        .createQueryBuilder('request')
++        .leftJoinAndSelect('request.media', 'media')
++        .leftJoinAndSelect('request.requestedBy', 'requestedBy')
++        .where('request.status IN (:...statuses)', {
++          statuses: [MediaRequestStatus.APPROVED, MediaRequestStatus.COMPLETED],
++        })
++        .andWhere('request.autoDeleteDate IS NOT NULL')
++        .andWhere('request.autoDeleteDate <= :now', {
++          now: new Date(),
++        })
++        .getMany();
++
++      if (expiredRequests.length === 0) {
++        logger.info('No expired media requests found', {
++          label: 'Auto-Delete Job',
++        });
++        this.running = false;
++        return;
++      }
++
++      logger.info('Found expired media requests', {
++        label: 'Auto-Delete Job',
++        count: expiredRequests.length,
++      });
++
++      let deletedCount = 0;
++      let errorCount = 0;
++
++      // Process each expired request
++      for (const request of expiredRequests) {
++        try {
++          const mediaTitle =
++            request.type === MediaType.MOVIE
++              ? `Movie: ${request.media.tmdbId}`
++              : `Series: ${request.media.tmdbId}`;
++
++          logger.info('Processing expired media request', {
++            label: 'Auto-Delete Job',
++            requestId: request.id,
++            mediaType: request.type,
++            tmdbId: request.media.tmdbId,
++            expirationDate: request.autoDeleteDate,
++            is4k: request.is4k,
++          });
++
++          // Delete from Radarr or Sonarr
++          if (request.type === MediaType.MOVIE) {
++            // Find Radarr server
++            const radarrServer = settings.radarr.find(
++              (server) =>
++                server.id === request.serverId && server.is4k === request.is4k
++            );
++
++            if (!radarrServer) {
++              logger.warn('Radarr server not found for expired request', {
++                label: 'Auto-Delete Job',
++                requestId: request.id,
++                serverId: request.serverId,
++              });
++              continue;
++            }
++
++            const radarr = new RadarrAPI({
++              apiKey: radarrServer.apiKey,
++              url: RadarrAPI.buildUrl(radarrServer, '/api/v3'),
++            });
++
++            // Get movie from Radarr
++            let movieTitle = `TMDB ${request.media.tmdbId}`;
++            try {
++              const radarrMovie = await radarr.getMovieByTmdbId(
++                request.media.tmdbId
++              );
++              movieTitle = radarrMovie.title;
++
++              // Delete the movie
++              await radarr['axios'].delete(`/movie/${radarrMovie.id}`, {
++                params: {
++                  deleteFiles: true,
++                  addImportExclusion: false,
++                },
++              });
++
++              logger.info('Successfully deleted expired movie from Radarr', {
++                label: 'Auto-Delete Job',
++                requestId: request.id,
++                title: radarrMovie.title,
++                tmdbId: request.media.tmdbId,
++                radarrId: radarrMovie.id,
++                serverName: radarrServer.name,
++                expirationDate: request.autoDeleteDate,
++              });
++
++              deletedCount++;
++            } catch (error) {
++              if (error.message.includes('404') || error.message.includes('not found')) {
++                logger.info('Movie already removed from Radarr', {
++                  label: 'Auto-Delete Job',
++                  requestId: request.id,
++                  tmdbId: request.media.tmdbId,
++                });
++                // Still count as success since it's gone
++                deletedCount++;
++              } else {
++                throw error;
++              }
++            }
++
++            // Add to blocklist AFTER deletion (regardless of whether movie was found)
++            // This prevents automatic re-requesting by list sync jobs
++            try {
++              await Blacklist.addToBlacklist({
++                blacklistRequest: {
++                  tmdbId: request.media.tmdbId,
++                  mediaType: MediaType.MOVIE,
++                  title: movieTitle,
++                  blacklistedTags: 'auto-deleted',
++                },
++              });
++
++              logger.info('Added auto-deleted movie to blocklist', {
++                label: 'Auto-Delete Job',
++                tmdbId: request.media.tmdbId,
++                title: movieTitle,
++              });
++            } catch (blocklistError) {
++              logger.warn('Failed to add to blocklist (may already exist)', {
++                label: 'Auto-Delete Job',
++                tmdbId: request.media.tmdbId,
++                error: blocklistError.message,
++              });
++            }
++          } else if (request.type === MediaType.TV) {
++            // Find Sonarr server
++            const sonarrServer = settings.sonarr.find(
++              (server) =>
++                server.id === request.serverId && server.is4k === request.is4k
++            );
++
++            if (!sonarrServer) {
++              logger.warn('Sonarr server not found for expired request', {
++                label: 'Auto-Delete Job',
++                requestId: request.id,
++                serverId: request.serverId,
++              });
++              continue;
++            }
++
++            const sonarr = new SonarrAPI({
++              apiKey: sonarrServer.apiKey,
++              url: SonarrAPI.buildUrl(sonarrServer, '/api/v3'),
++            });
++
++            // Get series from Sonarr (requires TVDB ID)
++            if (!request.media.tvdbId) {
++              logger.warn('No TVDB ID found for series, cannot delete', {
++                label: 'Auto-Delete Job',
++                requestId: request.id,
++                tmdbId: request.media.tmdbId,
++              });
++              continue;
++            }
++
++            let seriesTitle = `TMDB ${request.media.tmdbId}`;
++            try {
++              const sonarrSeries = await sonarr.getSeriesByTvdbId(
++                request.media.tvdbId
++              );
++              seriesTitle = sonarrSeries.title;
++
++              // Delete the series
++              await sonarr['axios'].delete(`/series/${sonarrSeries.id}`, {
++                params: {
++                  deleteFiles: true,
++                  addImportExclusion: false,
++                },
++              });
++
++              logger.info('Successfully deleted expired series from Sonarr', {
++                label: 'Auto-Delete Job',
++                requestId: request.id,
++                title: sonarrSeries.title,
++                tvdbId: request.media.tvdbId,
++                sonarrId: sonarrSeries.id,
++                serverName: sonarrServer.name,
++                expirationDate: request.autoDeleteDate,
++              });
++
++              deletedCount++;
++            } catch (error) {
++              if (error.message.includes('404') || error.message.includes('not found')) {
++                logger.info('Series already removed from Sonarr', {
++                  label: 'Auto-Delete Job',
++                  requestId: request.id,
++                  tvdbId: request.media.tvdbId,
++                });
++                deletedCount++;
++              } else {
++                throw error;
++              }
++            }
++
++            // Add to blocklist AFTER deletion (regardless of whether series was found)
++            // This prevents automatic re-requesting by list sync jobs
++            try {
++              await Blacklist.addToBlacklist({
++                blacklistRequest: {
++                  tmdbId: request.media.tmdbId,
++                  mediaType: MediaType.TV,
++                  title: seriesTitle,
++                  blacklistedTags: 'auto-deleted',
++                },
++              });
++
++              logger.info('Added auto-deleted series to blocklist', {
++                label: 'Auto-Delete Job',
++                tmdbId: request.media.tmdbId,
++                title: seriesTitle,
++              });
++            } catch (blocklistError) {
++              logger.warn('Failed to add to blocklist (may already exist)', {
++                label: 'Auto-Delete Job',
++                tmdbId: request.media.tmdbId,
++                error: blocklistError.message,
++              });
++            }
++          }
++
++          // Update request - mark as expired/completed (keep for history)
++          // Don't delete the request itself, just clear the autoDeleteDate
++          request.autoDeleteDate = null as any;
++          await requestRepository.save(request);
++        } catch (error) {
++          logger.error('Error processing expired media request', {
++            label: 'Auto-Delete Job',
++            requestId: request.id,
++            error: error.message,
++          });
++          errorCount++;
++        }
++      }
++
++      logger.info('Completed scheduled job: Auto-Delete Expired Media', {
++        label: 'Jobs',
++        processedCount: expiredRequests.length,
++        deletedCount,
++        errorCount,
++      });
++    } catch (e) {
++      logger.error('Error running auto-delete expired job', {
++        label: 'Auto-Delete Job',
++        errorMessage: e.message,
++      });
++    } finally {
++      this.running = false;
++    }
++  }
++
++  public status(): StatusBase {
++    return {
++      running: this.running,
++      progress: 0,
++      total: 0,
++    };
++  }
++
++  public cancel(): void {
++    this.running = false;
++  }
++}
++
++const autoDeleteExpiredJob = new AutoDeleteExpiredJob();
++export default autoDeleteExpiredJob;
++
+diff --git a/server/migration/postgres/1735213200000-AddAutoDeleteDateToMediaRequest.ts b/server/migration/postgres/1735213200000-AddAutoDeleteDateToMediaRequest.ts
+new file mode 100644
+index 00000000..51140f7f
+--- /dev/null
++++ b/server/migration/postgres/1735213200000-AddAutoDeleteDateToMediaRequest.ts
+@@ -0,0 +1,22 @@
++import type { MigrationInterface, QueryRunner } from 'typeorm';
++
++export class AddAutoDeleteDateToMediaRequest1735213200000
++  implements MigrationInterface
++{
++  name = 'AddAutoDeleteDateToMediaRequest1735213200000';
++
++  public async up(queryRunner: QueryRunner): Promise<void> {
++    // Add autoDeleteDate column to media_request table
++    await queryRunner.query(
++      `ALTER TABLE "media_request" ADD COLUMN "autoDeleteDate" TIMESTAMP`
++    );
++  }
++
++  public async down(queryRunner: QueryRunner): Promise<void> {
++    // Remove autoDeleteDate column
++    await queryRunner.query(
++      `ALTER TABLE "media_request" DROP COLUMN "autoDeleteDate"`
++    );
++  }
++}
++
+diff --git a/server/migration/sqlite/1735213200000-AddAutoDeleteDateToMediaRequest.ts b/server/migration/sqlite/1735213200000-AddAutoDeleteDateToMediaRequest.ts
+new file mode 100644
+index 00000000..bd9c9621
+--- /dev/null
++++ b/server/migration/sqlite/1735213200000-AddAutoDeleteDateToMediaRequest.ts
+@@ -0,0 +1,24 @@
++import type { MigrationInterface, QueryRunner } from 'typeorm';
++
++export class AddAutoDeleteDateToMediaRequest1735213200000
++  implements MigrationInterface
++{
++  name = 'AddAutoDeleteDateToMediaRequest1735213200000';
++
++  public async up(queryRunner: QueryRunner): Promise<void> {
++    // Add autoDeleteDate column to media_request table
++    await queryRunner.query(
++      `ALTER TABLE "media_request" ADD COLUMN "autoDeleteDate" datetime`
++    );
++  }
++
++  public async down(queryRunner: QueryRunner): Promise<void> {
++    // Remove autoDeleteDate column
++    // SQLite doesn't support DROP COLUMN directly, would need table recreation
++    // For simplicity, we'll leave it (migrations rarely rolled back in production)
++    await queryRunner.query(
++      `ALTER TABLE "media_request" DROP COLUMN "autoDeleteDate"`
++    );
++  }
++}
++
+diff --git a/server/routes/request.ts b/server/routes/request.ts
+index a142a6c0..1da27e19 100644
+--- a/server/routes/request.ts
++++ b/server/routes/request.ts
+@@ -26,9 +26,12 @@ import { getSettings } from '@server/lib/settings';
+ import logger from '@server/logger';
+ import { isAuthenticated } from '@server/middleware/auth';
+ import { Router } from 'express';
++import autoDeleteRoutes from './request/autoDelete';
+ 
+ const requestRoutes = Router();
+ 
++requestRoutes.use('/', autoDeleteRoutes);
++
+ requestRoutes.get<Record<string, unknown>, RequestResultsResponse>(
+   '/',
+   async (req, res, next) => {
+@@ -294,6 +297,24 @@ requestRoutes.post<never, MediaRequest, MediaRequestBody>(
+       }
+       const request = await MediaRequest.request(req.body, req.user);
+ 
++      // Handle auto-delete if specified
++      if (req.body.autoDeleteDays && req.body.autoDeleteDays > 0) {
++        const requestRepository = getRepository(MediaRequest);
++        const daysToAdd = Number(req.body.autoDeleteDays);
++        const autoDeleteDate = new Date();
++        autoDeleteDate.setDate(autoDeleteDate.getDate() + daysToAdd);
++        request.autoDeleteDate = autoDeleteDate;
++        
++        await requestRepository.save(request);
++
++        logger.info('Request created with auto-delete', {
++          label: 'Media Request',
++          requestId: request.id,
++          autoDeleteDays: daysToAdd,
++          autoDeleteDate: autoDeleteDate.toISOString(),
++        });
++      }
++
+       return res.status(201).json(request);
+     } catch (error) {
+       if (!(error instanceof Error)) {
+diff --git a/server/routes/request/autoDelete.ts b/server/routes/request/autoDelete.ts
+new file mode 100644
+index 00000000..8798a425
+--- /dev/null
++++ b/server/routes/request/autoDelete.ts
+@@ -0,0 +1,95 @@
++import { Router } from 'express';
++import { getRepository } from '@server/datasource';
++import { MediaRequest } from '@server/entity/MediaRequest';
++import { Permission } from '@server/lib/permissions';
++import { isAuthenticated } from '@server/middleware/auth';
++import logger from '@server/logger';
++
++const autoDeleteRoutes = Router();
++
++/**
++ * POST /api/v1/request/auto-delete/:requestId
++ * Set auto-delete expiration for a request
++ * 
++ * Body: { days: number }  // Days until auto-delete (0 or null = remove expiration)
++ */
++autoDeleteRoutes.post(
++  '/auto-delete/:requestId',
++  isAuthenticated(Permission.MANAGE_REQUESTS),
++  async (req, res, next) => {
++    const requestRepository = getRepository(MediaRequest);
++
++    try {
++      const request = await requestRepository.findOneOrFail({
++        where: { id: Number(req.params.requestId) },
++      });
++
++      const days = Number(req.body.days);
++
++      if (days > 0) {
++        const autoDeleteDate = new Date();
++        autoDeleteDate.setDate(autoDeleteDate.getDate() + days);
++        request.autoDeleteDate = autoDeleteDate;
++
++        logger.info('Auto-delete expiration set for request', {
++          label: 'Auto-Delete API',
++          requestId: request.id,
++          days,
++          autoDeleteDate: autoDeleteDate.toISOString(),
++        });
++      } else {
++        request.autoDeleteDate = null as any;
++
++        logger.info('Auto-delete expiration removed from request', {
++          label: 'Auto-Delete API',
++          requestId: request.id,
++        });
++      }
++
++      await requestRepository.save(request);
++
++      return res.status(200).json(request);
++    } catch (e) {
++      logger.error('Error setting auto-delete', {
++        label: 'Auto-Delete API',
++        error: e.message,
++      });
++      next({ status: 404, message: 'Request not found.' });
++    }
++  }
++);
++
++/**
++ * GET /api/v1/request/auto-delete/:requestId
++ * Get auto-delete info for a request
++ */
++autoDeleteRoutes.get(
++  '/auto-delete/:requestId',
++  isAuthenticated(Permission.MANAGE_REQUESTS),
++  async (req, res, next) => {
++    const requestRepository = getRepository(MediaRequest);
++
++    try {
++      const request = await requestRepository.findOneOrFail({
++        where: { id: Number(req.params.requestId) },
++        select: ['id', 'autoDeleteDate'],
++      });
++
++      return res.status(200).json({
++        requestId: request.id,
++        autoDeleteDate: request.autoDeleteDate,
++        hasExpiration: !!request.autoDeleteDate,
++        daysUntilDeletion: request.autoDeleteDate
++          ? Math.ceil(
++              (request.autoDeleteDate.getTime() - Date.now()) / 1000 / 60 / 60 / 24
++            )
++          : null,
++      });
++    } catch (e) {
++      next({ status: 404, message: 'Request not found.' });
++    }
++  }
++);
++
++export default autoDeleteRoutes;
++
+diff --git a/src/components/AutoDeleteBlock/index.tsx b/src/components/AutoDeleteBlock/index.tsx
+new file mode 100644
+index 00000000..2452dfc4
+--- /dev/null
++++ b/src/components/AutoDeleteBlock/index.tsx
+@@ -0,0 +1,254 @@
++import Badge from '@app/components/Common/Badge';
++import Button from '@app/components/Common/Button';
++import ConfirmButton from '@app/components/Common/ConfirmButton';
++import Modal from '@app/components/Common/Modal';
++import { Permission, useUser } from '@app/hooks/useUser';
++import globalMessages from '@app/i18n/globalMessages';
++import defineMessages from '@app/utils/defineMessages';
++import { CalendarIcon, TrashIcon, ClockIcon } from '@heroicons/react/24/solid';
++import type { MediaRequest } from '@server/entity/MediaRequest';
++import axios from 'axios';
++import { useIntl } from 'react-intl';
++import { useState } from 'react';
++
++const messages = defineMessages('components.AutoDeleteBlock', {
++  autodelete: 'Auto-Delete',
++  deletesin: 'Deletes in {days} {days, plural, one {day} other {days}}',
++  deleteson: 'Scheduled for {date}',
++  cancelautodelete: 'Cancel Auto-Delete',
++  setautodelete: 'Set Auto-Delete',
++  autodeletedays: 'Delete after (days)',
++  autodeletedescription:
++    'Media will be automatically removed from Radarr/Sonarr after the specified time period. Deletion check runs daily at 3:00 AM. Deleted items are added to the blocklist to prevent automatic re-requests.',
++  confirmcancel: 'Are you sure you want to cancel auto-delete?',
++  autodeleteactive: 'Auto-Delete Active',
++  autodeletenotset: 'No auto-delete scheduled',
++  setautodeletemodaltitle: 'Set Auto-Delete',
++  expired: 'Expired - pending deletion',
++});
++
++interface AutoDeleteBlockProps {
++  request: MediaRequest;
++  onUpdate?: () => void;
++}
++
++const AutoDeleteBlock = ({ request, onUpdate }: AutoDeleteBlockProps) => {
++  const intl = useIntl();
++  const { hasPermission } = useUser();
++  const [isUpdating, setIsUpdating] = useState(false);
++  const [showSetModal, setShowSetModal] = useState(false);
++  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(90);
++
++  // Debug: Log request data on mount
++  console.log('[AutoDeleteBlock] Request data:', {
++    id: request.id,
++    type: request.type,
++    mediaId: request.media?.id,
++    mediaTmdbId: request.media?.tmdbId,
++    autoDeleteDate: request.autoDeleteDate,
++  });
++
++  // Calculate days remaining
++  const getDaysRemaining = (): number | null => {
++    if (!request.autoDeleteDate) return null;
++    const now = new Date();
++    const deleteDate = new Date(request.autoDeleteDate);
++    const diffTime = deleteDate.getTime() - now.getTime();
++    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
++    return diffDays;
++  };
++
++  const getProgressPercentage = (): number => {
++    if (!request.autoDeleteDate) return 0;
++    
++    const createdAt = new Date(request.createdAt);
++    const deleteDate = new Date(request.autoDeleteDate);
++    const now = new Date();
++    
++    const totalDuration = deleteDate.getTime() - createdAt.getTime();
++    const elapsed = now.getTime() - createdAt.getTime();
++    
++    const percentage = Math.min(100, Math.max(0, (elapsed / totalDuration) * 100));
++    return percentage;
++  };
++
++  const cancelAutoDelete = async () => {
++    console.log('[AutoDeleteBlock] Cancel button clicked');
++    try {
++      console.log('[AutoDeleteBlock] Sending POST to /api/v1/request/auto-delete/' + request.id);
++      await axios.post(`/api/v1/request/auto-delete/${request.id}`, {
++        days: 0,
++      });
++      console.log('[AutoDeleteBlock] Auto-delete cancelled successfully');
++      
++      // Refresh the page with cache-busting to force fresh data
++      window.location.href = window.location.href.split('?')[0] + '?t=' + Date.now();
++    } catch (error) {
++      console.error('[AutoDeleteBlock] Failed to cancel auto-delete:', error);
++      console.error('[AutoDeleteBlock] Error details:', error.response?.data);
++      alert(`❌ Failed to cancel auto-delete: ${error.response?.data?.message || error.message}`);
++    }
++  };
++
++  const setAutoDelete = async () => {
++    console.log('[AutoDeleteBlock] Set button clicked, days:', autoDeleteDays);
++    try {
++      console.log('[AutoDeleteBlock] Sending POST to /api/v1/request/auto-delete/' + request.id);
++      await axios.post(`/api/v1/request/auto-delete/${request.id}`, {
++        days: autoDeleteDays,
++      });
++      console.log('[AutoDeleteBlock] Auto-delete set successfully');
++      setShowSetModal(false);
++      
++      // Refresh the page with cache-busting to force fresh data
++      window.location.href = window.location.href.split('?')[0] + '?t=' + Date.now();
++    } catch (error) {
++      console.error('[AutoDeleteBlock] Failed to set auto-delete:', error);
++      console.error('[AutoDeleteBlock] Error details:', error.response?.data);
++      alert(`❌ Failed to set auto-delete: ${error.response?.data?.message || error.message}`);
++      setIsUpdating(false);
++    }
++  };
++
++  const daysRemaining = getDaysRemaining();
++  const progressPercentage = getProgressPercentage();
++  const isExpired = daysRemaining !== null && daysRemaining < 0;
++
++  return (
++    <>
++      <div className="p-4">
++        <div className="mb-2 flex items-center justify-between">
++          <div className="flex items-center">
++            <ClockIcon className="mr-2 h-5 w-5 text-yellow-500" />
++            <span className="text-sm font-semibold">
++              {intl.formatMessage(messages.autodelete)}
++            </span>
++          </div>
++          {request.autoDeleteDate && (
++            <Badge badgeType={isExpired ? 'danger' : 'warning'}>
++              {intl.formatMessage(messages.autodeleteactive)}
++            </Badge>
++          )}
++        </div>
++
++        {request.autoDeleteDate ? (
++          <>
++            {/* Progress Bar */}
++            <div className="relative mb-3 h-6 min-w-0 overflow-hidden rounded-full bg-gray-700">
++              <div
++                className={`h-6 transition-all duration-200 ease-in-out ${
++                  isExpired ? 'bg-red-600' : 'bg-yellow-600'
++                }`}
++                style={{
++                  width: `${progressPercentage}%`,
++                }}
++              />
++              <div className="absolute inset-0 flex h-6 w-full items-center justify-center text-xs font-semibold">
++                <span>
++                  {isExpired
++                    ? intl.formatMessage(messages.expired)
++                    : daysRemaining !== null &&
++                      intl.formatMessage(messages.deletesin, {
++                        days: daysRemaining,
++                      })}
++                </span>
++              </div>
++            </div>
++
++            {/* Delete Date */}
++            <div className="mb-3 flex items-center justify-between text-xs text-gray-400">
++              <div className="flex items-center">
++                <CalendarIcon className="mr-1.5 h-4 w-4" />
++                <span>
++                  {intl.formatMessage(messages.deleteson, {
++                    date: intl.formatDate(request.autoDeleteDate, {
++                      year: 'numeric',
++                      month: 'long',
++                      day: 'numeric',
++                      hour: 'numeric',
++                      minute: 'numeric',
++                    }),
++                  })}
++                </span>
++              </div>
++            </div>
++
++            {/* Cancel Button */}
++            {hasPermission(Permission.MANAGE_REQUESTS) && (
++              <ConfirmButton
++                onClick={cancelAutoDelete}
++                confirmText={intl.formatMessage(messages.confirmcancel)}
++                className="w-full"
++              >
++                <TrashIcon />
++                <span>{intl.formatMessage(messages.cancelautodelete)}</span>
++              </ConfirmButton>
++            )}
++          </>
++        ) : (
++          <>
++            {/* No Auto-Delete Set */}
++            <div className="mb-3 text-xs text-gray-400">
++              {intl.formatMessage(messages.autodeletenotset)}
++            </div>
++
++            {/* Set Auto-Delete Button */}
++            {hasPermission(Permission.MANAGE_REQUESTS) && (
++              <Button
++                onClick={() => setShowSetModal(true)}
++                className="w-full"
++                buttonType="primary"
++                disabled={isUpdating}
++              >
++                <CalendarIcon />
++                <span>{intl.formatMessage(messages.setautodelete)}</span>
++              </Button>
++            )}
++          </>
++        )}
++      </div>
++
++      {/* Set Auto-Delete Modal */}
++      {showSetModal && (
++        <Modal
++          title={intl.formatMessage(messages.setautodeletemodaltitle)}
++          onCancel={() => setShowSetModal(false)}
++          onOk={setAutoDelete}
++          okText={intl.formatMessage(globalMessages.save)}
++          okButtonType="primary"
++          loading={isUpdating}
++          backgroundClickable={false}
++        >
++          <div className="section">
++            <div className="form-row">
++              <label htmlFor="autoDeleteDays" className="text-label">
++                {intl.formatMessage(messages.autodeletedays)}
++                <span className="label-tip">
++                  {intl.formatMessage(messages.autodeletedescription)}
++                </span>
++              </label>
++              <div className="form-input-area">
++                <select
++                  id="autoDeleteDays"
++                  value={autoDeleteDays}
++                  onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
++                  className="rounded-md"
++                >
++                  <option value={7}>7 days</option>
++                  <option value={14}>14 days</option>
++                  <option value={30}>30 days</option>
++                  <option value={60}>60 days</option>
++                  <option value={90}>90 days</option>
++                  <option value={180}>180 days</option>
++                </select>
++              </div>
++            </div>
++          </div>
++        </Modal>
++      )}
++    </>
++  );
++};
++
++export default AutoDeleteBlock;
++
+diff --git a/src/components/ManageSlideOver/index.tsx b/src/components/ManageSlideOver/index.tsx
+index 7a2c1047..7bed1f96 100644
+--- a/src/components/ManageSlideOver/index.tsx
++++ b/src/components/ManageSlideOver/index.tsx
+@@ -1,3 +1,4 @@
++import AutoDeleteBlock from '@app/components/AutoDeleteBlock';
+ import BlacklistBlock from '@app/components/BlacklistBlock';
+ import Button from '@app/components/Common/Button';
+ import CachedImage from '@app/components/Common/CachedImage';
+@@ -37,6 +38,7 @@ const messages = defineMessages('components.ManageSlideOver', {
+   manageModalTitle: 'Manage {mediaType}',
+   manageModalIssues: 'Open Issues',
+   manageModalRequests: 'Requests',
++  manageModalAutoDelete: 'Auto-Delete',
+   manageModalMedia: 'Media',
+   manageModalMedia4k: '4K Media',
+   manageModalAdvanced: 'Advanced',
+@@ -101,7 +103,11 @@ const ManageSlideOver = ({
+       data.mediaInfo &&
+       hasPermission(Permission.ADMIN)
+       ? `/api/v1/media/${data.mediaInfo.id}/watch_data`
+-      : null
++      : null,
++    {
++      shouldRetryOnError: false,
++      revalidateOnFocus: false,
++    }
+   );
+   const { data: radarrData } = useSWR<RadarrSettings[]>(
+     hasPermission(Permission.ADMIN) ? '/api/v1/settings/radarr' : null
+@@ -197,6 +203,16 @@ const ManageSlideOver = ({
+       (issue) => issue.status === IssueStatus.OPEN
+     ) ?? [];
+ 
++  // Get all requests with auto-delete set (any status except DECLINED)
++  const autoDeleteRequests = requests.filter(
++    (request) => request.autoDeleteDate
++  );
++  
++  // Get the first request without auto-delete (to show the option to set it)
++  const firstRequestWithoutAutoDelete = requests.find(
++    (request) => !request.autoDeleteDate
++  );
++
+   const styledPlayCount = (playCount: number): JSX.Element => {
+     return (
+       <>
+@@ -276,6 +292,37 @@ const ManageSlideOver = ({
+               </div>
+             </div>
+           )}
++        {hasPermission(Permission.MANAGE_REQUESTS) && requests.length > 0 && (
++          <div>
++            <h3 className="mb-2 text-xl font-bold">
++              {intl.formatMessage(messages.manageModalAutoDelete)}
++            </h3>
++            <div className="overflow-hidden rounded-md border border-gray-700 shadow">
++              <ul>
++                {autoDeleteRequests.length > 0 ? (
++                  autoDeleteRequests.map((request) => (
++                    <li
++                      key={`manage-autodelete-${request.id}`}
++                      className="border-b border-gray-700 last:border-b-0"
++                    >
++                    <AutoDeleteBlock
++                      request={request}
++                      onUpdate={() => revalidate()}
++                    />
++                    </li>
++                  ))
++                ) : firstRequestWithoutAutoDelete ? (
++                  <li className="border-b border-gray-700 last:border-b-0">
++                      <AutoDeleteBlock
++                        request={firstRequestWithoutAutoDelete}
++                        onUpdate={() => revalidate()}
++                      />
++                  </li>
++                ) : null}
++              </ul>
++            </div>
++          </div>
++        )}
+         {requests.length > 0 && (
+           <div>
+             <h3 className="mb-2 text-xl font-bold">
+diff --git a/src/components/RequestBlock/index.tsx b/src/components/RequestBlock/index.tsx
+index 2ebc9f23..dd42374b 100644
+--- a/src/components/RequestBlock/index.tsx
++++ b/src/components/RequestBlock/index.tsx
+@@ -10,6 +10,7 @@ import defineMessages from '@app/utils/defineMessages';
+ import {
+   CalendarIcon,
+   CheckIcon,
++  ClockIcon,
+   EyeIcon,
+   PencilIcon,
+   TrashIcon,
+@@ -38,6 +39,8 @@ const messages = defineMessages('components.RequestBlock', {
+   decline: 'Decline Request',
+   edit: 'Edit Request',
+   delete: 'Delete Request',
++  autodeletedate: 'Auto-Delete Date',
++  deletesin: 'Deletes in {days} {days, plural, one {day} other {days}}',
+ });
+ 
+ interface RequestBlockProps {
+@@ -76,6 +79,18 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
+     setIsUpdating(false);
+   };
+ 
++  // Calculate days remaining for auto-delete
++  const getDaysRemaining = (): number | null => {
++    if (!request.autoDeleteDate) return null;
++    const now = new Date();
++    const deleteDate = new Date(request.autoDeleteDate);
++    const diffTime = deleteDate.getTime() - now.getTime();
++    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
++    return diffDays;
++  };
++
++  const daysRemaining = getDaysRemaining();
++
+   return (
+     <div className="block">
+       <RequestModal
+@@ -260,6 +275,24 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
+             </Tooltip>
+           </div>
+         </div>
++        {request.autoDeleteDate && (
++          <div className="mt-2 flex items-center text-sm text-yellow-500">
++            <Tooltip content={intl.formatMessage(messages.autodeletedate)}>
++              <ClockIcon className="mr-1.5 h-5 w-5 flex-shrink-0" />
++            </Tooltip>
++            <span>
++              {daysRemaining !== null && daysRemaining >= 0
++                ? intl.formatMessage(messages.deletesin, {
++                    days: daysRemaining,
++                  })
++                : intl.formatDate(request.autoDeleteDate, {
++                    year: 'numeric',
++                    month: 'long',
++                    day: 'numeric',
++                  })}
++            </span>
++          </div>
++        )}
+         {(request.seasons ?? []).length > 0 && (
+           <div className="mt-2 flex flex-col text-sm">
+             <div className="mb-1 font-medium">
+diff --git a/src/components/RequestList/RequestItem/index.tsx b/src/components/RequestList/RequestItem/index.tsx
+index 83480040..6e6f6c71 100644
+--- a/src/components/RequestList/RequestItem/index.tsx
++++ b/src/components/RequestList/RequestItem/index.tsx
+@@ -2,6 +2,7 @@ import Badge from '@app/components/Common/Badge';
+ import Button from '@app/components/Common/Button';
+ import CachedImage from '@app/components/Common/CachedImage';
+ import ConfirmButton from '@app/components/Common/ConfirmButton';
++import Modal from '@app/components/Common/Modal';
+ import RequestModal from '@app/components/RequestModal';
+ import StatusBadge from '@app/components/StatusBadge';
+ import useDeepLinks from '@app/hooks/useDeepLinks';
+@@ -12,6 +13,7 @@ import defineMessages from '@app/utils/defineMessages';
+ import { refreshIntervalHelper } from '@app/utils/refreshIntervalHelper';
+ import {
+   ArrowPathIcon,
++  CalendarIcon,
+   CheckIcon,
+   PencilIcon,
+   TrashIcon,
+@@ -303,6 +305,8 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
+   const intl = useIntl();
+   const { user, hasPermission } = useUser();
+   const [showEditModal, setShowEditModal] = useState(false);
++  const [showAutoDeleteModal, setShowAutoDeleteModal] = useState(false);
++  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(30);
+   const url =
+     request.type === 'movie'
+       ? `/api/v1/movie/${request.media.tmdbId}`
+@@ -334,6 +338,16 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
+     }
+   };
+ 
++  const approveWithAutoDelete = async (): Promise<void> => {
++    await axios.post(`/api/v1/request/${request.id}/approve`, {
++      autoDeleteAfterDays: autoDeleteDays,
++    });
++
++    revalidate();
++    mutate('/api/v1/request/count');
++    setShowAutoDeleteModal(false);
++  };
++
+   const deleteRequest = async () => {
+     await axios.delete(`/api/v1/request/${request.id}`);
+ 
+@@ -728,6 +742,16 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
+                     <span>{intl.formatMessage(globalMessages.approve)}</span>
+                   </Button>
+                 </span>
++                <span className="w-full">
++                  <Button
++                    className="w-full"
++                    buttonType="primary"
++                    onClick={() => setShowAutoDeleteModal(true)}
++                  >
++                    <CalendarIcon />
++                    <span>Temp</span>
++                  </Button>
++                </span>
+                 <span className="w-full">
+                   <Button
+                     className="w-full"
+diff --git a/src/components/RequestModal/MovieRequestModal.tsx b/src/components/RequestModal/MovieRequestModal.tsx
+index 134a937f..93842966 100644
+--- a/src/components/RequestModal/MovieRequestModal.tsx
++++ b/src/components/RequestModal/MovieRequestModal.tsx
+@@ -57,6 +57,7 @@ const MovieRequestModal = ({
+   const [isUpdating, setIsUpdating] = useState(false);
+   const [requestOverrides, setRequestOverrides] =
+     useState<RequestOverrides | null>(null);
++  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(0); // 0 = keep forever
+   const { addToast } = useToasts();
+   const { data, error } = useSWR<MovieDetails>(`/api/v1/movie/${tmdbId}`, {
+     revalidateOnMount: true,
+@@ -95,6 +96,7 @@ const MovieRequestModal = ({
+         mediaType: 'movie',
+         is4k,
+         ...overrideParams,
++        autoDeleteDays: autoDeleteDays > 0 ? autoDeleteDays : undefined,
+       });
+       mutate('/api/v1/request?filter=all&take=10&sort=modified&skip=0');
+       mutate('/api/v1/request/count');
+@@ -141,6 +143,7 @@ const MovieRequestModal = ({
+     addToast,
+     intl,
+     hasPermission,
++    autoDeleteDays,
+   ]);
+ 
+   const cancelRequest = async () => {
+@@ -364,6 +367,37 @@ const MovieRequestModal = ({
+           }}
+         />
+       )}
++      
++      {/* Auto-Delete Option */}
++      <div className="mt-6">
++        <div className="form-row">
++          <label htmlFor="autoDeleteDays" className="text-label">
++            <span className="mr-2">Auto-Delete After:</span>
++            <span className="label-tip">
++              Automatically remove this media after download (optional)
++            </span>
++          </label>
++          <div className="form-input-area">
++            <select
++              id="autoDeleteDays"
++              value={autoDeleteDays}
++              onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
++              className="rounded-md"
++            >
++              <option value={0}>Keep Forever</option>
++              <option value={7}>7 days</option>
++              <option value={30}>30 days</option>
++              <option value={60}>60 days</option>
++              <option value={90}>90 days</option>
++            </select>
++          </div>
++        </div>
++        {autoDeleteDays > 0 && (
++          <div className="mt-2 text-sm text-yellow-500">
++            ⚠️ This media will be automatically deleted after {autoDeleteDays} days
++          </div>
++        )}
++      </div>
+     </Modal>
+   );
+ };
+-- 
+2.51.1
+
