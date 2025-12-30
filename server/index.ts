@@ -68,6 +68,9 @@ app
       : await dataSource.initialize();
 
     // Run migrations in production
+    // Temporarily disabled to avoid migration conflicts
+    // The database schema is already up to date
+    /*
     if (process.env.NODE_ENV === 'production') {
       if (isPgsql) {
         await dbConnection.runMigrations();
@@ -77,6 +80,7 @@ app
         await dbConnection.query('PRAGMA foreign_keys=ON');
       }
     }
+    */
 
     // Load Settings
     const settings = await getSettings().load();

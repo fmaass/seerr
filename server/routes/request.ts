@@ -297,6 +297,24 @@ requestRoutes.post<never, MediaRequest, MediaRequestBody>(
       }
       const request = await MediaRequest.request(req.body, req.user);
 
+      // Handle auto-delete if specified
+      if (req.body.autoDeleteDays && req.body.autoDeleteDays > 0) {
+        const requestRepository = getRepository(MediaRequest);
+        const daysToAdd = Number(req.body.autoDeleteDays);
+        const autoDeleteDate = new Date();
+        autoDeleteDate.setDate(autoDeleteDate.getDate() + daysToAdd);
+        request.autoDeleteDate = autoDeleteDate;
+        
+        await requestRepository.save(request);
+
+        logger.info('Request created with auto-delete', {
+          label: 'Media Request',
+          requestId: request.id,
+          autoDeleteDays: daysToAdd,
+          autoDeleteDate: autoDeleteDate.toISOString(),
+        });
+      }
+
       return res.status(201).json(request);
     } catch (error) {
       if (!(error instanceof Error)) {

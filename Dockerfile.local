@@ -8,5 +8,6 @@ COPY . /app
 WORKDIR /app
 
 RUN pnpm install
+RUN pnpm build
 
-CMD pnpm dev
+CMD pnpm start

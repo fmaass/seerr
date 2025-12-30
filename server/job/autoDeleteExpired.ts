@@ -2,6 +2,7 @@ import RadarrAPI from '@server/api/servarr/radarr';
 import SonarrAPI from '@server/api/servarr/sonarr';
 import { MediaRequestStatus, MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
+import { Blacklist } from '@server/entity/Blacklist';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import type { RunnableScanner, StatusBase } from '@server/lib/scanners/baseScanner';
 import { getSettings } from '@server/lib/settings';
@@ -28,13 +29,13 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
       const requestRepository = getRepository(MediaRequest);
       const settings = getSettings();
 
-      // Find all approved requests with expired autoDeleteDate
+      // Find all approved/completed requests with expired autoDeleteDate
       const expiredRequests = await requestRepository
         .createQueryBuilder('request')
         .leftJoinAndSelect('request.media', 'media')
         .leftJoinAndSelect('request.requestedBy', 'requestedBy')
-        .where('request.status = :status', {
-          status: MediaRequestStatus.APPROVED,
+        .where('request.status IN (:...statuses)', {
+          statuses: [MediaRequestStatus.APPROVED, MediaRequestStatus.COMPLETED],
         })
         .andWhere('request.autoDeleteDate IS NOT NULL')
         .andWhere('request.autoDeleteDate <= :now', {
@@ -98,10 +99,12 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
             });
 
             // Get movie from Radarr
+            let movieTitle = `TMDB ${request.media.tmdbId}`;
             try {
               const radarrMovie = await radarr.getMovieByTmdbId(
                 request.media.tmdbId
               );
+              movieTitle = radarrMovie.title;
 
               // Delete the movie
               await radarr['axios'].delete(`/movie/${radarrMovie.id}`, {
@@ -135,6 +138,31 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
                 throw error;
               }
             }
+
+            // Add to blocklist AFTER deletion (regardless of whether movie was found)
+            // This prevents automatic re-requesting by list sync jobs
+            try {
+              await Blacklist.addToBlacklist({
+                blacklistRequest: {
+                  tmdbId: request.media.tmdbId,
+                  mediaType: MediaType.MOVIE,
+                  title: movieTitle,
+                  blacklistedTags: 'auto-deleted',
+                },
+              });
+
+              logger.info('Added auto-deleted movie to blocklist', {
+                label: 'Auto-Delete Job',
+                tmdbId: request.media.tmdbId,
+                title: movieTitle,
+              });
+            } catch (blocklistError) {
+              logger.warn('Failed to add to blocklist (may already exist)', {
+                label: 'Auto-Delete Job',
+                tmdbId: request.media.tmdbId,
+                error: blocklistError.message,
+              });
+            }
           } else if (request.type === MediaType.TV) {
             // Find Sonarr server
             const sonarrServer = settings.sonarr.find(
@@ -166,10 +194,12 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
               continue;
             }
 
+            let seriesTitle = `TMDB ${request.media.tmdbId}`;
             try {
               const sonarrSeries = await sonarr.getSeriesByTvdbId(
                 request.media.tvdbId
               );
+              seriesTitle = sonarrSeries.title;
 
               // Delete the series
               await sonarr['axios'].delete(`/series/${sonarrSeries.id}`, {
@@ -202,11 +232,36 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
                 throw error;
               }
             }
+
+            // Add to blocklist AFTER deletion (regardless of whether series was found)
+            // This prevents automatic re-requesting by list sync jobs
+            try {
+              await Blacklist.addToBlacklist({
+                blacklistRequest: {
+                  tmdbId: request.media.tmdbId,
+                  mediaType: MediaType.TV,
+                  title: seriesTitle,
+                  blacklistedTags: 'auto-deleted',
+                },
+              });
+
+              logger.info('Added auto-deleted series to blocklist', {
+                label: 'Auto-Delete Job',
+                tmdbId: request.media.tmdbId,
+                title: seriesTitle,
+              });
+            } catch (blocklistError) {
+              logger.warn('Failed to add to blocklist (may already exist)', {
+                label: 'Auto-Delete Job',
+                tmdbId: request.media.tmdbId,
+                error: blocklistError.message,
+              });
+            }
           }
 
           // Update request - mark as expired/completed (keep for history)
           // Don't delete the request itself, just clear the autoDeleteDate
-          request.autoDeleteDate = undefined;
+          request.autoDeleteDate = null as any;
           await requestRepository.save(request);
         } catch (error) {
           logger.error('Error processing expired media request', {

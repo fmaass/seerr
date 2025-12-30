@@ -8,13 +8,13 @@ import logger from '@server/logger';
 const autoDeleteRoutes = Router();
 
 /**
- * POST /api/v1/request/:requestId/auto-delete
+ * POST /api/v1/request/auto-delete/:requestId
  * Set auto-delete expiration for a request
  * 
  * Body: { days: number }  // Days until auto-delete (0 or null = remove expiration)
  */
 autoDeleteRoutes.post(
-  '/:requestId/auto-delete',
+  '/auto-delete/:requestId',
   isAuthenticated(Permission.MANAGE_REQUESTS),
   async (req, res, next) => {
     const requestRepository = getRepository(MediaRequest);
@@ -38,7 +38,7 @@ autoDeleteRoutes.post(
           autoDeleteDate: autoDeleteDate.toISOString(),
         });
       } else {
-        request.autoDeleteDate = undefined;
+        request.autoDeleteDate = null as any;
 
         logger.info('Auto-delete expiration removed from request', {
           label: 'Auto-Delete API',
@@ -60,11 +60,11 @@ autoDeleteRoutes.post(
 );
 
 /**
- * GET /api/v1/request/:requestId/auto-delete
+ * GET /api/v1/request/auto-delete/:requestId
  * Get auto-delete info for a request
  */
 autoDeleteRoutes.get(
-  '/:requestId/auto-delete',
+  '/auto-delete/:requestId',
   isAuthenticated(Permission.MANAGE_REQUESTS),
   async (req, res, next) => {
     const requestRepository = getRepository(MediaRequest);

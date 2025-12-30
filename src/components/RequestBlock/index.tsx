@@ -11,6 +11,7 @@ import defineMessages from '@app/utils/defineMessages';
 import {
   CalendarIcon,
   CheckIcon,
+  ClockIcon,
   EyeIcon,
   PencilIcon,
   TrashIcon,
@@ -39,6 +40,8 @@ const messages = defineMessages('components.RequestBlock', {
   decline: 'Decline Request',
   edit: 'Edit Request',
   delete: 'Delete Request',
+  autodeletedate: 'Auto-Delete Date',
+  deletesin: 'Deletes in {days} {days, plural, one {day} other {days}}',
 });
 
 interface RequestBlockProps {
@@ -92,6 +95,18 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
 
     setIsUpdating(false);
   };
+
+  // Calculate days remaining for auto-delete
+  const getDaysRemaining = (): number | null => {
+    if (!request.autoDeleteDate) return null;
+    const now = new Date();
+    const deleteDate = new Date(request.autoDeleteDate);
+    const diffTime = deleteDate.getTime() - now.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    return diffDays;
+  };
+
+  const daysRemaining = getDaysRemaining();
 
   return (
     <div className="block">
@@ -287,6 +302,24 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
             </Tooltip>
           </div>
         </div>
+        {request.autoDeleteDate && (
+          <div className="mt-2 flex items-center text-sm text-yellow-500">
+            <Tooltip content={intl.formatMessage(messages.autodeletedate)}>
+              <ClockIcon className="mr-1.5 h-5 w-5 flex-shrink-0" />
+            </Tooltip>
+            <span>
+              {daysRemaining !== null && daysRemaining >= 0
+                ? intl.formatMessage(messages.deletesin, {
+                    days: daysRemaining,
+                  })
+                : intl.formatDate(request.autoDeleteDate, {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                  })}
+            </span>
+          </div>
+        )}
         {(request.seasons ?? []).length > 0 && (
           <div className="mt-2 flex flex-col text-sm">
             <div className="mb-1 font-medium">
