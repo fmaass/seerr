@@ -1,8 +1,5 @@
 import animeList from '@server/api/animelist';
-import type {
-  JellyfinLibraryItem,
-  JellyfinLibraryItemExtended,
-} from '@server/api/jellyfin';
+import type { JellyfinLibraryItem } from '@server/api/jellyfin';
 import JellyfinAPI from '@server/api/jellyfin';
 import { getMetadataProvider } from '@server/api/metadata';
 import TheMovieDb from '@server/api/themoviedb';
@@ -11,119 +8,132 @@ import type {
   TmdbKeyword,
   TmdbTvDetails,
 } from '@server/api/themoviedb/interfaces';
+import { MediaStatus, MediaType } from '@server/constants/media';
 import { MediaServerType } from '@server/constants/server';
 import { getRepository } from '@server/datasource';
+import Media from '@server/entity/Media';
+import Season from '@server/entity/Season';
 import { User } from '@server/entity/User';
-import type {
-  ProcessableSeason,
-  RunnableScanner,
-  StatusBase,
-} from '@server/lib/scanners/baseScanner';
-import BaseScanner from '@server/lib/scanners/baseScanner';
 import type { Library } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
+import logger from '@server/logger';
+import AsyncLock from '@server/utils/asyncLock';
 import { getHostname } from '@server/utils/getHostname';
+import { randomUUID as uuid } from 'crypto';
 import { uniqWith } from 'lodash';
 
-interface JellyfinSyncStatus extends StatusBase {
+const BUNDLE_SIZE = 20;
+const UPDATE_RATE = 4 * 1000;
+
+interface SyncStatus {
+  running: boolean;
+  progress: number;
+  total: number;
   currentLibrary: Library;
   libraries: Library[];
 }
 
-class JellyfinScanner
-  extends BaseScanner<JellyfinLibraryItem>
-  implements RunnableScanner<JellyfinSyncStatus>
-{
+class JellyfinScanner {
+  private sessionId: string;
+  private tmdb: TheMovieDb;
   private jfClient: JellyfinAPI;
+  private items: JellyfinLibraryItem[] = [];
+  private progress = 0;
   private libraries: Library[];
   private currentLibrary: Library;
+  private running = false;
   private isRecentOnly = false;
+  private enable4kMovie = false;
+  private enable4kShow = false;
+  private asyncLock = new AsyncLock();
   private processedAnidbSeason: Map<number, Map<number, number>>;
 
   constructor({ isRecentOnly }: { isRecentOnly?: boolean } = {}) {
-    super('Jellyfin Sync');
+    this.tmdb = new TheMovieDb();
+
     this.isRecentOnly = isRecentOnly ?? false;
   }
 
-  private async extractMovieIds(jellyfinitem: JellyfinLibraryItem): Promise<{
-    tmdbId: number;
-    imdbId?: string;
-    metadata: JellyfinLibraryItemExtended;
-  } | null> {
-    let metadata = await this.jfClient.getItemData(jellyfinitem.Id);
+  private async getExisting(tmdbId: number, mediaType: MediaType) {
+    const mediaRepository = getRepository(Media);
 
-    if (!metadata?.Id) {
-      this.log('No Id metadata for this title. Skipping', 'debug', {
-        jellyfinItemId: jellyfinitem.Id,
-      });
-      return null;
-    }
+    const existing = await mediaRepository.findOne({
+      where: { tmdbId: tmdbId, mediaType },
+    });
 
-    const anidbId = Number(metadata.ProviderIds.AniDB ?? null);
-    let tmdbId = Number(metadata.ProviderIds.Tmdb ?? null);
-    let imdbId = metadata.ProviderIds.Imdb;
-
-    // We use anidb only if we have the anidbId and nothing else
-    if (anidbId && !imdbId && !tmdbId) {
-      const result = animeList.getFromAnidbId(anidbId);
-      tmdbId = Number(result?.tmdbId ?? null);
-      imdbId = result?.imdbId;
-    }
-
-    if (imdbId && !tmdbId) {
-      const tmdbMovie = await this.tmdb.getMediaByImdbId({
-        imdbId: imdbId,
-      });
-      tmdbId = tmdbMovie.id;
-    }
-
-    if (!tmdbId) {
-      throw new Error('Unable to find TMDb ID');
-    }
-
-    // With AniDB we can have mixed libraries with movies in a "show" library
-    // We take the first episode of the first season (the movie) and use it to
-    // get more information, like the MediaSource
-    if (anidbId && metadata.Type === 'Series') {
-      const season = (await this.jfClient.getSeasons(jellyfinitem.Id)).find(
-        (md) => {
-          return md.IndexNumber === 1;
-        }
-      );
-      if (!season) {
-        this.log('No season found for anidb movie', 'debug', {
-          jellyfinitem,
-        });
-        return null;
-      }
-      const episodes = await this.jfClient.getEpisodes(
-        jellyfinitem.Id,
-        season.Id
-      );
-      if (!episodes[0]) {
-        this.log('No episode found for anidb movie', 'debug', {
-          jellyfinitem,
-        });
-        return null;
-      }
-      metadata = await this.jfClient.getItemData(episodes[0].Id);
-      if (!metadata) {
-        this.log('No metadata found for anidb movie', 'debug', {
-          jellyfinitem,
-        });
-        return null;
-      }
-    }
-
-    return { tmdbId, imdbId, metadata };
+    return existing;
   }
 
-  private async processJellyfinMovie(jellyfinitem: JellyfinLibraryItem) {
-    try {
-      const extracted = await this.extractMovieIds(jellyfinitem);
-      if (!extracted) return;
+  private async processMovie(jellyfinitem: JellyfinLibraryItem) {
+    const mediaRepository = getRepository(Media);
 
-      const { tmdbId, imdbId, metadata } = extracted;
+    try {
+      let metadata = await this.jfClient.getItemData(jellyfinitem.Id);
+      const newMedia = new Media();
+
+      if (!metadata?.Id) {
+        logger.debug('No Id metadata for this title. Skipping', {
+          label: 'Jellyfin Sync',
+          jellyfinItemId: jellyfinitem.Id,
+        });
+        return;
+      }
+
+      const anidbId = Number(metadata.ProviderIds.AniDB ?? null);
+
+      newMedia.tmdbId = Number(metadata.ProviderIds.Tmdb ?? null);
+      newMedia.imdbId = metadata.ProviderIds.Imdb;
+
+      // We use anidb only if we have the anidbId and nothing else
+      if (anidbId && !newMedia.imdbId && !newMedia.tmdbId) {
+        const result = animeList.getFromAnidbId(anidbId);
+        newMedia.tmdbId = Number(result?.tmdbId ?? null);
+        newMedia.imdbId = result?.imdbId;
+      }
+
+      if (newMedia.imdbId && !isNaN(newMedia.tmdbId)) {
+        const tmdbMovie = await this.tmdb.getMediaByImdbId({
+          imdbId: newMedia.imdbId,
+        });
+        newMedia.tmdbId = tmdbMovie.id;
+      }
+      if (!newMedia.tmdbId) {
+        throw new Error('Unable to find TMDb ID');
+      }
+
+      // With AniDB we can have mixed libraries with movies in a "show" library
+      // We take the first episode of the first season (the movie) and use it to
+      // get more information, like the MediaSource
+      if (anidbId && metadata.Type === 'Series') {
+        const season = (await this.jfClient.getSeasons(jellyfinitem.Id)).find(
+          (md) => {
+            return md.IndexNumber === 1;
+          }
+        );
+        if (!season) {
+          this.log('No season found for anidb movie', 'debug', {
+            jellyfinitem,
+          });
+          return;
+        }
+        const episodes = await this.jfClient.getEpisodes(
+          jellyfinitem.Id,
+          season.Id
+        );
+        if (!episodes[0]) {
+          this.log('No episode found for anidb movie', 'debug', {
+            jellyfinitem,
+          });
+          return;
+        }
+        metadata = await this.jfClient.getItemData(episodes[0].Id);
+        if (!metadata) {
+          this.log('No metadata found for anidb movie', 'debug', {
+            jellyfinitem,
+          });
+          return;
+        }
+      }
 
       const has4k = metadata.MediaSources?.some((MediaSource) => {
         return MediaSource.MediaStreams.filter(
@@ -141,29 +151,93 @@ class JellyfinScanner
         });
       });
 
-      const mediaAddedAt = metadata.DateCreated
-        ? new Date(metadata.DateCreated)
-        : undefined;
+      await this.asyncLock.dispatch(newMedia.tmdbId, async () => {
+        if (!metadata) {
+          // this will never execute, but typescript thinks somebody could reset tvShow from
+          // outer scope back to null before this async gets called
+          return;
+        }
 
-      if (hasOtherResolution || (!this.enable4kMovie && has4k)) {
-        await this.processMovie(tmdbId, {
-          is4k: false,
-          mediaAddedAt,
-          jellyfinMediaId: metadata.Id,
-          imdbId,
-          title: metadata.Name,
-        });
-      }
+        const existing = await this.getExisting(
+          newMedia.tmdbId,
+          MediaType.MOVIE
+        );
 
-      if (has4k && this.enable4kMovie) {
-        await this.processMovie(tmdbId, {
-          is4k: true,
-          mediaAddedAt,
-          jellyfinMediaId: metadata.Id,
-          imdbId,
-          title: metadata.Name,
-        });
-      }
+        if (existing) {
+          let changedExisting = false;
+
+          if (
+            (hasOtherResolution || (!this.enable4kMovie && has4k)) &&
+            existing.status !== MediaStatus.AVAILABLE
+          ) {
+            existing.status = MediaStatus.AVAILABLE;
+            existing.mediaAddedAt = new Date(metadata.DateCreated ?? '');
+            changedExisting = true;
+          }
+
+          if (
+            has4k &&
+            this.enable4kMovie &&
+            existing.status4k !== MediaStatus.AVAILABLE
+          ) {
+            existing.status4k = MediaStatus.AVAILABLE;
+            changedExisting = true;
+          }
+
+          if (!existing.mediaAddedAt && !changedExisting) {
+            existing.mediaAddedAt = new Date(metadata.DateCreated ?? '');
+            changedExisting = true;
+          }
+
+          if (
+            (hasOtherResolution || (has4k && !this.enable4kMovie)) &&
+            existing.jellyfinMediaId !== metadata.Id
+          ) {
+            existing.jellyfinMediaId = metadata.Id;
+            changedExisting = true;
+          }
+
+          if (
+            has4k &&
+            this.enable4kMovie &&
+            existing.jellyfinMediaId4k !== metadata.Id
+          ) {
+            existing.jellyfinMediaId4k = metadata.Id;
+            changedExisting = true;
+          }
+
+          if (changedExisting) {
+            await mediaRepository.save(existing);
+            this.log(
+              `Request for ${metadata.Name} exists. New media types set to AVAILABLE`,
+              'info'
+            );
+          } else {
+            this.log(
+              `Title already exists and no new media types found ${metadata.Name}`
+            );
+          }
+        } else {
+          newMedia.status =
+            hasOtherResolution || (!this.enable4kMovie && has4k)
+              ? MediaStatus.AVAILABLE
+              : MediaStatus.UNKNOWN;
+          newMedia.status4k =
+            has4k && this.enable4kMovie
+              ? MediaStatus.AVAILABLE
+              : MediaStatus.UNKNOWN;
+          newMedia.mediaType = MediaType.MOVIE;
+          newMedia.mediaAddedAt = new Date(metadata.DateCreated ?? '');
+          newMedia.jellyfinMediaId =
+            hasOtherResolution || (!this.enable4kMovie && has4k)
+              ? metadata.Id
+              : null;
+          newMedia.jellyfinMediaId4k =
+            has4k && this.enable4kMovie ? metadata.Id : null;
+          await mediaRepository.save(newMedia);
+          this.log(`Saved ${metadata.Name}`);
+        }
+      });
     } catch (e) {
       this.log(
         `Failed to process Jellyfin item, id: ${jellyfinitem.Id}`,
@@ -212,7 +286,9 @@ class JellyfinScanner
     return tvShow;
   }
 
-  private async processJellyfinShow(jellyfinitem: JellyfinLibraryItem) {
+  private async processShow(jellyfinitem: JellyfinLibraryItem) {
+    const mediaRepository = getRepository(Media);
+
     let tvShow: TmdbTvDetails | null = null;
 
     try {
@@ -221,7 +297,8 @@ class JellyfinScanner
       const metadata = await this.jfClient.getItemData(Id);
 
       if (!metadata?.Id) {
-        this.log('No Id metadata for this title. Skipping', 'debug', {
+        logger.debug('No Id metadata for this title. Skipping', {
+          label: 'Jellyfin Sync',
           jellyfinItemId: jellyfinitem.Id,
         });
         return;
@@ -238,7 +315,6 @@ class JellyfinScanner
           });
         }
       }
-
       if (!tvShow && metadata.ProviderIds.Tvdb) {
         try {
           tvShow = await this.getTvShow({
@@ -250,7 +326,6 @@ class JellyfinScanner
           });
         }
       }
-
       let tvdbSeasonFromAnidb: number | undefined;
       if (!tvShow && metadata.ProviderIds.AniDB) {
         const anidbId = Number(metadata.ProviderIds.AniDB);
@@ -269,149 +344,330 @@ class JellyfinScanner
         }
         // With AniDB we can have mixed libraries with movies in a "show" library
         else if (result?.imdbId || result?.tmdbId) {
-          await this.processJellyfinMovie(jellyfinitem);
+          await this.processMovie(jellyfinitem);
           return;
         }
       }
 
       if (tvShow) {
-        const seasons = tvShow.seasons;
-        const jellyfinSeasons = await this.jfClient.getSeasons(Id);
+        await this.asyncLock.dispatch(tvShow.id, async () => {
+          if (!tvShow) {
+            // this will never execute, but typescript thinks somebody could reset tvShow from
+            // outer scope back to null before this async gets called
+            return;
+          }
 
-        const processableSeasons: ProcessableSeason[] = [];
+          // Lets get the available seasons from Jellyfin
+          const seasons = tvShow.seasons;
+          const media = await this.getExisting(tvShow.id, MediaType.TV);
 
-        const settings = getSettings();
-        const filteredSeasons = settings.main.enableSpecialEpisodes
-          ? seasons
-          : seasons.filter((sn) => sn.season_number !== 0);
+          const newSeasons: Season[] = [];
 
-        for (const season of filteredSeasons) {
-          const matchedJellyfinSeason = jellyfinSeasons.find((md) => {
-            if (tvdbSeasonFromAnidb) {
-              // In AniDB we don't have the concept of seasons,
-              // we have multiple shows with only Season 1 (and sometimes a season with index 0 for specials).
-              // We use tvdbSeasonFromAnidb to check if we are on the correct TMDB season and
-              // md.IndexNumber === 1 to be sure to find the correct season on jellyfin
-              return (
-                tvdbSeasonFromAnidb === season.season_number &&
-                md.IndexNumber === 1
-              );
-            } else {
-              return Number(md.IndexNumber) === season.season_number;
-            }
-          });
+          const currentStandardSeasonAvailable = (
+            media?.seasons.filter(
+              (season) => season.status === MediaStatus.AVAILABLE
+            ) ?? []
+          ).length;
+          const current4kSeasonAvailable = (
+            media?.seasons.filter(
+              (season) => season.status4k === MediaStatus.AVAILABLE
+            ) ?? []
+          ).length;
 
-          // Check if we found the matching season and it has all the available episodes
-          if (matchedJellyfinSeason) {
-            let totalStandard = 0;
-            let total4k = 0;
+          const jellyfinSeasons = await this.jfClient.getSeasons(Id);
 
-            if (!this.enable4kShow) {
-              const episodes = await this.jfClient.getEpisodes(
-                Id,
-                matchedJellyfinSeason.Id
-              );
-
-              for (const episode of episodes) {
-                let episodeCount = 1;
-
-                // count number of combined episodes
-                if (
-                  episode.IndexNumber !== undefined &&
-                  episode.IndexNumberEnd !== undefined
-                ) {
-                  episodeCount =
-                    episode.IndexNumberEnd - episode.IndexNumber + 1;
-                }
-
-                totalStandard += episodeCount;
-              }
-            } else {
-              // 4K detection enabled - request media info to check resolution
-              const episodes = await this.jfClient.getEpisodes(
-                Id,
-                matchedJellyfinSeason.Id,
-                { includeMediaInfo: true }
-              );
-
-              for (const episode of episodes) {
-                let episodeCount = 1;
-
-                // count number of combined episodes
-                if (
-                  episode.IndexNumber !== undefined &&
-                  episode.IndexNumberEnd !== undefined
-                ) {
-                  episodeCount =
-                    episode.IndexNumberEnd - episode.IndexNumber + 1;
-                }
-
-                const has4k = episode.MediaSources?.some((MediaSource) =>
-                  MediaSource.MediaStreams.some(
-                    (MediaStream) =>
-                      MediaStream.Type === 'Video' &&
-                      (MediaStream.Width ?? 0) > 2000
-                  )
+          for (const season of seasons) {
+            const matchedJellyfinSeason = jellyfinSeasons.find((md) => {
+              if (tvdbSeasonFromAnidb) {
+                // In AniDB we don't have the concept of seasons,
+                // we have multiple shows with only Season 1 (and sometimes a season with index 0 for specials).
+                // We use tvdbSeasonFromAnidb to check if we are on the correct TMDB season and
+                // md.IndexNumber === 1 to be sure to find the correct season on jellyfin
+                return (
+                  tvdbSeasonFromAnidb === season.season_number &&
+                  md.IndexNumber === 1
                 );
-
-                const hasStandard = episode.MediaSources?.some((MediaSource) =>
-                  MediaSource.MediaStreams.some(
-                    (MediaStream) =>
-                      MediaStream.Type === 'Video' &&
-                      (MediaStream.Width ?? 0) <= 2000
-                  )
-                );
-
-                // Count in both if episode has both versions
-                // TODO: Make this more robust in the future
-                // Currently, this detection is based solely on file resolution, not which
-                // Radarr/Sonarr instance the file came from. If a 4K request results in
-                // 1080p files (no 4K release available yet), those files will be counted
-                // as "standard" even though they're in the 4K library. This can cause
-                // non-4K users to see content as "available" when they can't access it.
-                // See issue https://github.com/seerr-team/seerr/issues/1744 for details.
-                if (hasStandard) totalStandard += episodeCount;
-                if (has4k) total4k += episodeCount;
-              }
-            }
-
-            // With AniDB we can have multiple shows for one season, so we need to save
-            // the episode from all the jellyfin entries to get the total
-            if (tvdbSeasonFromAnidb) {
-              let show = this.processedAnidbSeason.get(tvShow.id);
-
-              if (!show) {
-                show = new Map([[season.season_number, totalStandard]]);
-                this.processedAnidbSeason.set(tvShow.id, show);
               } else {
-                const currentCount = show.get(season.season_number) ?? 0;
-                const newCount = currentCount + totalStandard;
-                show.set(season.season_number, newCount);
-                totalStandard = newCount;
+                return Number(md.IndexNumber) === season.season_number;
+              }
+            });
+
+            const existingSeason = media?.seasons.find(
+              (es) => es.seasonNumber === season.season_number
+            );
+
+            // Check if we found the matching season and it has all the available episodes
+            if (matchedJellyfinSeason) {
+              let totalStandard = 0;
+              let total4k = 0;
+
+              if (!this.enable4kShow) {
+                const episodes = await this.jfClient.getEpisodes(
+                  Id,
+                  matchedJellyfinSeason.Id
+                );
+
+                for (const episode of episodes) {
+                  let episodeCount = 1;
+
+                  // count number of combined episodes
+                  if (
+                    episode.IndexNumber !== undefined &&
+                    episode.IndexNumberEnd !== undefined
+                  ) {
+                    episodeCount =
+                      episode.IndexNumberEnd - episode.IndexNumber + 1;
+                  }
+
+                  totalStandard += episodeCount;
+                }
+              } else {
+                // 4K detection enabled - request media info to check resolution
+                const episodes = await this.jfClient.getEpisodes(
+                  Id,
+                  matchedJellyfinSeason.Id,
+                  { includeMediaInfo: true }
+                );
+
+                for (const episode of episodes) {
+                  let episodeCount = 1;
+
+                  // count number of combined episodes
+                  if (
+                    episode.IndexNumber !== undefined &&
+                    episode.IndexNumberEnd !== undefined
+                  ) {
+                    episodeCount =
+                      episode.IndexNumberEnd - episode.IndexNumber + 1;
+                  }
+
+                  // MediaSources field is included in response when includeMediaInfo is true
+                  // We iterate all MediaSources to detect if episode has both standard AND 4K versions
+                  episode.MediaSources?.some((MediaSource) => {
+                    return MediaSource.MediaStreams.some((MediaStream) => {
+                      if (MediaStream.Type === 'Video') {
+                        if ((MediaStream.Width ?? 0) >= 2000) {
+                          total4k += episodeCount;
+                        } else {
+                          totalStandard += episodeCount;
+                        }
+                      }
+                    });
+                  });
+                }
+              }
+
+              // With AniDB we can have multiple shows for one season, so we need to save
+              // the episode from all the jellyfin entries to get the total
+              if (tvdbSeasonFromAnidb) {
+                if (this.processedAnidbSeason.has(tvShow.id)) {
+                  const show = this.processedAnidbSeason.get(tvShow.id)!;
+                  if (show.has(season.season_number)) {
+                    show.set(
+                      season.season_number,
+                      show.get(season.season_number)! + totalStandard
+                    );
+
+                    totalStandard = show.get(season.season_number)!;
+                  } else {
+                    show.set(season.season_number, totalStandard);
+                  }
+                } else {
+                  this.processedAnidbSeason.set(
+                    tvShow.id,
+                    new Map([[season.season_number, totalStandard]])
+                  );
+                }
+              }
+
+              if (
+                media &&
+                (totalStandard > 0 || (total4k > 0 && !this.enable4kShow)) &&
+                media.jellyfinMediaId !== Id
+              ) {
+                media.jellyfinMediaId = Id;
+              }
+
+              if (
+                media &&
+                total4k > 0 &&
+                this.enable4kShow &&
+                media.jellyfinMediaId4k !== Id
+              ) {
+                media.jellyfinMediaId4k = Id;
+              }
+
+              if (existingSeason) {
+                // These ternary statements look super confusing, but they are simply
+                // setting the status to AVAILABLE if all of a type is there, partially if some,
+                // and then not modifying the status if there are 0 items
+                existingSeason.status =
+                  totalStandard >= season.episode_count ||
+                  existingSeason.status === MediaStatus.AVAILABLE
+                    ? MediaStatus.AVAILABLE
+                    : totalStandard > 0
+                    ? MediaStatus.PARTIALLY_AVAILABLE
+                    : existingSeason.status;
+                existingSeason.status4k =
+                  (this.enable4kShow && total4k >= season.episode_count) ||
+                  existingSeason.status4k === MediaStatus.AVAILABLE
+                    ? MediaStatus.AVAILABLE
+                    : this.enable4kShow && total4k > 0
+                    ? MediaStatus.PARTIALLY_AVAILABLE
+                    : existingSeason.status4k;
+              } else {
+                newSeasons.push(
+                  new Season({
+                    seasonNumber: season.season_number,
+                    // This ternary is the same as the ones above, but it just falls back to "UNKNOWN"
+                    // if we dont have any items for the season
+                    status:
+                      totalStandard >= season.episode_count
+                        ? MediaStatus.AVAILABLE
+                        : totalStandard > 0
+                        ? MediaStatus.PARTIALLY_AVAILABLE
+                        : MediaStatus.UNKNOWN,
+                    status4k:
+                      this.enable4kShow && total4k >= season.episode_count
+                        ? MediaStatus.AVAILABLE
+                        : this.enable4kShow && total4k > 0
+                        ? MediaStatus.PARTIALLY_AVAILABLE
+                        : MediaStatus.UNKNOWN,
+                  })
+                );
               }
             }
+          }
 
-            processableSeasons.push({
-              seasonNumber: season.season_number,
-              totalEpisodes: season.episode_count,
-              episodes: totalStandard,
-              episodes4k: total4k,
+          // Remove extras season. We dont count it for determining availability
+          const filteredSeasons = tvShow.seasons.filter(
+            (season) => season.season_number !== 0
+          );
+
+          const isAllStandardSeasons =
+            newSeasons.filter(
+              (season) => season.status === MediaStatus.AVAILABLE
+            ).length +
+              (media?.seasons.filter(
+                (season) => season.status === MediaStatus.AVAILABLE
+              ).length ?? 0) >=
+            filteredSeasons.length;
+
+          const isAll4kSeasons =
+            newSeasons.filter(
+              (season) => season.status4k === MediaStatus.AVAILABLE
+            ).length +
+              (media?.seasons.filter(
+                (season) => season.status4k === MediaStatus.AVAILABLE
+              ).length ?? 0) >=
+            filteredSeasons.length;
+
+          if (media) {
+            // Update existing
+            media.seasons = [...media.seasons, ...newSeasons];
+
+            const newStandardSeasonAvailable = (
+              media.seasons.filter(
+                (season) => season.status === MediaStatus.AVAILABLE
+              ) ?? []
+            ).length;
+
+            const new4kSeasonAvailable = (
+              media.seasons.filter(
+                (season) => season.status4k === MediaStatus.AVAILABLE
+              ) ?? []
+            ).length;
+
+            // If at least one new season has become available, update
+            // the lastSeasonChange field so we can trigger notifications
+            if (newStandardSeasonAvailable > currentStandardSeasonAvailable) {
+              this.log(
+                `Detected ${
+                  newStandardSeasonAvailable - currentStandardSeasonAvailable
+                } new standard season(s) for ${tvShow.name}`,
+                'debug'
+              );
+              media.lastSeasonChange = new Date();
+              media.mediaAddedAt = new Date(metadata.DateCreated ?? '');
+            }
+
+            if (new4kSeasonAvailable > current4kSeasonAvailable) {
+              this.log(
+                `Detected ${
+                  new4kSeasonAvailable - current4kSeasonAvailable
+                } new 4K season(s) for ${tvShow.name}`,
+                'debug'
+              );
+              media.lastSeasonChange = new Date();
+            }
+
+            if (!media.mediaAddedAt) {
+              media.mediaAddedAt = new Date(metadata.DateCreated ?? '');
+            }
+
+            // If the show is already available, and there are no new seasons, dont adjust
+            // the status
+            const shouldStayAvailable =
+              media.status === MediaStatus.AVAILABLE &&
+              newSeasons.filter(
+                (season) => season.status !== MediaStatus.UNKNOWN
+              ).length === 0;
+            const shouldStayAvailable4k =
+              media.status4k === MediaStatus.AVAILABLE &&
+              newSeasons.filter(
+                (season) => season.status4k !== MediaStatus.UNKNOWN
+              ).length === 0;
+
+            media.status =
+              isAllStandardSeasons || shouldStayAvailable
+                ? MediaStatus.AVAILABLE
+                : media.seasons.some(
+                    (season) => season.status !== MediaStatus.UNKNOWN
+                  )
+                ? MediaStatus.PARTIALLY_AVAILABLE
+                : MediaStatus.UNKNOWN;
+            media.status4k =
+              (isAll4kSeasons || shouldStayAvailable4k) && this.enable4kShow
+                ? MediaStatus.AVAILABLE
+                : this.enable4kShow &&
+                  media.seasons.some(
+                    (season) => season.status4k !== MediaStatus.UNKNOWN
+                  )
+                ? MediaStatus.PARTIALLY_AVAILABLE
+                : MediaStatus.UNKNOWN;
+            await mediaRepository.save(media);
+            this.log(`Updating existing title: ${tvShow.name}`);
+          } else {
+            const newMedia = new Media({
+              mediaType: MediaType.TV,
+              seasons: newSeasons,
+              tmdbId: tvShow.id,
+              tvdbId: tvShow.external_ids.tvdb_id,
+              mediaAddedAt: new Date(metadata.DateCreated ?? ''),
+              jellyfinMediaId: isAllStandardSeasons ? Id : null,
+              jellyfinMediaId4k:
+                isAll4kSeasons && this.enable4kShow ? Id : null,
+              status: isAllStandardSeasons
+                ? MediaStatus.AVAILABLE
+                : newSeasons.some(
+                    (season) => season.status !== MediaStatus.UNKNOWN
+                  )
+                ? MediaStatus.PARTIALLY_AVAILABLE
+                : MediaStatus.UNKNOWN,
+              status4k:
+                isAll4kSeasons && this.enable4kShow
+                  ? MediaStatus.AVAILABLE
+                  : this.enable4kShow &&
+                    newSeasons.some(
+                      (season) => season.status4k !== MediaStatus.UNKNOWN
+                    )
+                  ? MediaStatus.PARTIALLY_AVAILABLE
+                  : MediaStatus.UNKNOWN,
             });
+            await mediaRepository.save(newMedia);
+            this.log(`Saved ${tvShow.name}`);
           }
-        }
-
-        await this.processShow(
-          tvShow.id,
-          tvShow.external_ids?.tvdb_id,
-          processableSeasons,
-          {
-            mediaAddedAt: metadata.DateCreated
-              ? new Date(metadata.DateCreated)
-              : undefined,
-            jellyfinMediaId: Id,
-            title: tvShow.name,
-          }
-        );
+        });
       } else {
         this.log(
           `No information found for the show: ${metadata.Name}`,
@@ -427,17 +683,70 @@ class JellyfinScanner
           jellyfinitem.SeriesId ?? jellyfinitem.SeasonId ?? jellyfinitem.Id
         }`,
         'error',
-        { errorMessage: e.message, jellyfinitem }
+        {
+          errorMessage: e.message,
+          jellyfinitem,
+        }
       );
     }
   }
 
-  private async processItem(item: JellyfinLibraryItem): Promise<void> {
-    if (item.Type === 'Movie') {
-      await this.processJellyfinMovie(item);
-    } else if (item.Type === 'Series') {
-      await this.processJellyfinShow(item);
+  private async processItems(slicedItems: JellyfinLibraryItem[]) {
+    this.processedAnidbSeason = new Map();
+    await Promise.all(
+      slicedItems.map(async (item) => {
+        if (item.Type === 'Movie') {
+          await this.processMovie(item);
+        } else if (item.Type === 'Series') {
+          await this.processShow(item);
+        }
+      })
+    );
+  }
+
+  private async loop({
+    start = 0,
+    end = BUNDLE_SIZE,
+    sessionId,
+  }: {
+    start?: number;
+    end?: number;
+    sessionId?: string;
+  } = {}) {
+    const slicedItems = this.items.slice(start, end);
+
+    if (!this.running) {
+      throw new Error('Sync was aborted.');
     }
+
+    if (this.sessionId !== sessionId) {
+      throw new Error('New session was started. Old session aborted.');
+    }
+
+    if (start < this.items.length) {
+      this.progress = start;
+      await this.processItems(slicedItems);
+
+      await new Promise<void>((resolve, reject) =>
+        setTimeout(() => {
+          this.loop({
+            start: start + BUNDLE_SIZE,
+            end: end + BUNDLE_SIZE,
+            sessionId,
+          })
+            .then(() => resolve())
+            .catch((e) => reject(new Error(e.message)));
+        }, UPDATE_RATE)
+      );
+    }
+  }
+
+  private log(
+    message: string,
+    level: 'info' | 'error' | 'debug' | 'warn' = 'debug',
+    optional?: Record<string, unknown>
+  ): void {
+    logger[level](message, { label: 'Jellyfin Sync', ...optional });
   }
 
   public async run(): Promise<void> {
@@ -450,9 +759,14 @@ class JellyfinScanner
       return;
     }
 
-    const sessionId = this.startRun();
-
+    const sessionId = uuid();
+    this.sessionId = sessionId;
+    logger.info('Jellyfin Sync Starting', {
+      sessionId,
+      label: 'Jellyfin Sync',
+    });
     try {
+      this.running = true;
       const userRepository = getRepository(User);
       const admin = await userRepository.findOne({
         where: { id: 1 },
@@ -478,11 +792,25 @@ class JellyfinScanner
 
       await animeList.sync();
 
+      this.enable4kMovie = settings.radarr.some((radarr) => radarr.is4k);
+      if (this.enable4kMovie) {
+        this.log(
+          'At least one 4K Radarr server was detected. 4K movie detection is now enabled',
+          'info'
+        );
+      }
+
+      this.enable4kShow = settings.sonarr.some((sonarr) => sonarr.is4k);
+      if (this.enable4kShow) {
+        this.log(
+          'At least one 4K Sonarr server was detected. 4K series detection is now enabled',
+          'info'
+        );
+      }
+
       if (this.isRecentOnly) {
         for (const library of this.libraries) {
           this.currentLibrary = library;
-          // Reset AniDB season tracking per library
-          this.processedAnidbSeason = new Map();
           this.log(
             `Beginning to process recently added for library: ${library.name}`,
             'info'
@@ -502,19 +830,16 @@ class JellyfinScanner
             return mediaA.Id === mediaB.Id;
           });
 
-          await this.loop(this.processItem.bind(this), { sessionId });
+          await this.loop({ sessionId });
         }
       } else {
         for (const library of this.libraries) {
           this.currentLibrary = library;
-          // Reset AniDB season tracking per library
-          this.processedAnidbSeason = new Map();
           this.log(`Beginning to process library: ${library.name}`, 'info');
           this.items = await this.jfClient.getLibraryContents(library.id);
-          await this.loop(this.processItem.bind(this), { sessionId });
+          await this.loop({ sessionId });
         }
       }
-
       this.log(
         this.isRecentOnly
           ? 'Recently Added Scan Complete'
@@ -522,13 +847,19 @@ class JellyfinScanner
         'info'
       );
     } catch (e) {
-      this.log('Sync interrupted', 'error', { errorMessage: e.message });
+      logger.error('Sync interrupted', {
+        label: 'Jellyfin Sync',
+        errorMessage: e.message,
+      });
     } finally {
-      this.endRun(sessionId);
+      // If a new scanning session hasnt started, set running back to false
+      if (this.sessionId === sessionId) {
+        this.running = false;
+      }
     }
   }
 
-  public status(): JellyfinSyncStatus {
+  public status(): SyncStatus {
     return {
       running: this.running,
       progress: this.progress,
@@ -536,6 +867,10 @@ class JellyfinScanner
       currentLibrary: this.currentLibrary,
       libraries: this.libraries,
     };
+  }
+
+  public cancel(): void {
+    this.running = false;
   }
 }
 

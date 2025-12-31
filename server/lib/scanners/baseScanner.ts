@@ -34,8 +34,6 @@ interface ProcessOptions {
   is4k?: boolean;
   mediaAddedAt?: Date;
   ratingKey?: string;
-  jellyfinMediaId?: string;
-  imdbId?: string;
   serviceId?: number;
   externalServiceId?: number;
   externalServiceSlug?: string;
@@ -97,8 +95,6 @@ class BaseScanner<T> {
       is4k = false,
       mediaAddedAt,
       ratingKey,
-      jellyfinMediaId,
-      imdbId,
       serviceId,
       externalServiceId,
       externalServiceSlug,
@@ -134,21 +130,6 @@ class BaseScanner<T> {
           existing[is4k ? 'ratingKey4k' : 'ratingKey'] !== ratingKey
         ) {
           existing[is4k ? 'ratingKey4k' : 'ratingKey'] = ratingKey;
-          changedExisting = true;
-        }
-
-        if (
-          jellyfinMediaId &&
-          existing[is4k ? 'jellyfinMediaId4k' : 'jellyfinMediaId'] !==
-            jellyfinMediaId
-        ) {
-          existing[is4k ? 'jellyfinMediaId4k' : 'jellyfinMediaId'] =
-            jellyfinMediaId;
-          changedExisting = true;
-        }
-
-        if (imdbId && !existing.imdbId) {
-          existing.imdbId = imdbId;
           changedExisting = true;
         }
 
@@ -192,7 +173,6 @@ class BaseScanner<T> {
       } else {
         const newMedia = new Media();
         newMedia.tmdbId = tmdbId;
-        newMedia.imdbId = imdbId;
 
         newMedia.status =
           !is4k && !processing
@@ -223,13 +203,6 @@ class BaseScanner<T> {
           newMedia.ratingKey4k =
             is4k && this.enable4kMovie ? ratingKey : undefined;
         }
-
-        if (jellyfinMediaId) {
-          newMedia.jellyfinMediaId = !is4k ? jellyfinMediaId : undefined;
-          newMedia.jellyfinMediaId4k =
-            is4k && this.enable4kMovie ? jellyfinMediaId : undefined;
-        }
-
         await mediaRepository.save(newMedia);
         this.log(`Saved new media: ${title}`);
       }
@@ -248,12 +221,11 @@ class BaseScanner<T> {
    */
   protected async processShow(
     tmdbId: number,
-    tvdbId: number | undefined,
+    tvdbId: number,
     seasons: ProcessableSeason[],
     {
       mediaAddedAt,
       ratingKey,
-      jellyfinMediaId,
       serviceId,
       externalServiceId,
       externalServiceSlug,
@@ -285,7 +257,7 @@ class BaseScanner<T> {
           (es) => es.seasonNumber === season.seasonNumber
         );
 
-        // We update the rating keys and jellyfinMediaId in the seasons loop because we need episode counts
+        // We update the rating keys in the seasons loop because we need episode counts
         if (media && season.episodes > 0 && media.ratingKey !== ratingKey) {
           media.ratingKey = ratingKey;
         }
@@ -297,23 +269,6 @@ class BaseScanner<T> {
           media.ratingKey4k !== ratingKey
         ) {
           media.ratingKey4k = ratingKey;
-        }
-
-        if (
-          media &&
-          season.episodes > 0 &&
-          media.jellyfinMediaId !== jellyfinMediaId
-        ) {
-          media.jellyfinMediaId = jellyfinMediaId;
-        }
-
-        if (
-          media &&
-          season.episodes4k > 0 &&
-          this.enable4kShow &&
-          media.jellyfinMediaId4k !== jellyfinMediaId
-        ) {
-          media.jellyfinMediaId4k = jellyfinMediaId;
         }
 
         if (existingSeason) {
@@ -535,22 +490,6 @@ class BaseScanner<T> {
                 sn.status4k === MediaStatus.AVAILABLE
             )
               ? ratingKey
-              : undefined,
-          jellyfinMediaId: newSeasons.some(
-            (sn) =>
-              sn.status === MediaStatus.PARTIALLY_AVAILABLE ||
-              sn.status === MediaStatus.AVAILABLE
-          )
-            ? jellyfinMediaId
-            : undefined,
-          jellyfinMediaId4k:
-            this.enable4kShow &&
-            newSeasons.some(
-              (sn) =>
-                sn.status4k === MediaStatus.PARTIALLY_AVAILABLE ||
-                sn.status4k === MediaStatus.AVAILABLE
-            )
-              ? jellyfinMediaId
               : undefined,
           status: isAllStandardSeasons
             ? MediaStatus.AVAILABLE

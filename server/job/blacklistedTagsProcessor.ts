@@ -205,12 +205,16 @@ class BlacklistedTagProcessor implements RunnableScanner<StatusBase> {
   }
 
   private async cleanBlacklist(em: EntityManager) {
-    // Remove blacklist and media entries blacklisted by tags
+    // Remove blacklist and media entries blacklisted by TMDB keyword tags ONLY
+    // DO NOT remove entries synced from Radarr/Sonarr (radarr-sync-* or sonarr-sync-*)
     const mediaRepository = em.getRepository(Media);
     const mediaToRemove = await mediaRepository
       .createQueryBuilder('media')
       .innerJoinAndSelect(Blacklist, 'blist', 'blist.tmdbId = media.tmdbId')
       .where(`blist.blacklistedTags IS NOT NULL`)
+      .andWhere(`blist.blacklistedTags NOT LIKE 'radarr-sync-%'`)
+      .andWhere(`blist.blacklistedTags NOT LIKE 'sonarr-sync-%'`)
+      .andWhere(`blist.blacklistedTags LIKE ',%'`)
       .getMany();
 
     // Batch removes so the query doesn't get too large

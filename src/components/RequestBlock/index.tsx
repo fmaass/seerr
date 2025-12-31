@@ -1,6 +1,7 @@
 import Badge from '@app/components/Common/Badge';
 import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
+import Modal from '@app/components/Common/Modal';
 import Tooltip from '@app/components/Common/Tooltip';
 import RequestModal from '@app/components/RequestModal';
 import useRequestOverride from '@app/hooks/useRequestOverride';
@@ -50,6 +51,8 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
   const intl = useIntl();
   const [isUpdating, setIsUpdating] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showAutoDeleteModal, setShowAutoDeleteModal] = useState(false);
+  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(30);
   const { profile, rootFolder, server, languageProfile } =
     useRequestOverride(request);
 
@@ -62,6 +65,20 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
       mutate('/api/v1/request/count');
     }
     setIsUpdating(false);
+  };
+
+  const approveWithAutoDelete = async (): Promise<void> => {
+    setIsUpdating(true);
+    await axios.post(`/api/v1/request/${request.id}/approve`, {
+      autoDeleteAfterDays: autoDeleteDays,
+    });
+
+    if (onUpdate) {
+      onUpdate();
+      mutate('/api/v1/request/count');
+    }
+    setIsUpdating(false);
+    setShowAutoDeleteModal(false);
   };
 
   const deleteRequest = async () => {
@@ -165,6 +182,16 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
                     disabled={isUpdating}
                   >
                     <CheckIcon className="icon-sm" />
+                  </Button>
+                </Tooltip>
+                <Tooltip content="Approve with Auto-Delete">
+                  <Button
+                    buttonType="success"
+                    className="mr-1"
+                    onClick={() => setShowAutoDeleteModal(true)}
+                    disabled={isUpdating}
+                  >
+                    <CalendarIcon className="icon-sm" />
                   </Button>
                 </Tooltip>
                 <Tooltip content={intl.formatMessage(messages.decline)}>
@@ -325,6 +352,47 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
           </>
         )}
       </div>
+
+      {/* Auto-Delete Modal */}
+      {showAutoDeleteModal && (
+        <Modal
+          title="Approve with Auto-Delete"
+          onCancel={() => setShowAutoDeleteModal(false)}
+          onOk={() => approveWithAutoDelete()}
+          okText="Approve"
+          okButtonType="primary"
+          loading={isUpdating}
+          backgroundClickable={false}
+        >
+          <div className="section">
+            <div className="form-row">
+              <label htmlFor="autoDeleteDays" className="text-label">
+                Auto-delete after (days):
+                <span className="label-tip">
+                  Media will be automatically removed after this many days
+                </span>
+              </label>
+              <div className="form-input-area">
+                <select
+                  id="autoDeleteDays"
+                  value={autoDeleteDays}
+                  onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
+                  className="rounded-md"
+                >
+                  <option value={7}>7 days</option>
+                  <option value={30}>30 days</option>
+                  <option value={60}>60 days</option>
+                  <option value={90}>90 days</option>
+                </select>
+              </div>
+            </div>
+            <div className="mt-4 text-sm text-yellow-500">
+              ⚠️ This media will be automatically deleted from Radarr/Sonarr after{' '}
+              {autoDeleteDays} days
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

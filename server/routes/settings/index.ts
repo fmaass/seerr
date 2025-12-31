@@ -13,6 +13,7 @@ import type {
   LogsResultsResponse,
   SettingsAboutResponse,
 } from '@server/interfaces/api/settingsInterfaces';
+import blocklistSyncJob from '@server/job/blocklistSync';
 import { scheduledJobs } from '@server/job/schedule';
 import type { AvailableCacheIds } from '@server/lib/cache';
 import cacheManager from '@server/lib/cache';
@@ -39,6 +40,7 @@ import { rescheduleJob } from 'node-schedule';
 import path from 'path';
 import semver from 'semver';
 import { URL } from 'url';
+import blocklistRoutes from './blocklist';
 import metadataRoutes from './metadata';
 import notificationRoutes from './notifications';
 import radarrRoutes from './radarr';
@@ -46,6 +48,7 @@ import sonarrRoutes from './sonarr';
 
 const settingsRoutes = Router();
 
+settingsRoutes.use('/blocklist', blocklistRoutes);
 settingsRoutes.use('/notifications', notificationRoutes);
 settingsRoutes.use('/radarr', radarrRoutes);
 settingsRoutes.use('/sonarr', sonarrRoutes);
@@ -432,6 +435,39 @@ settingsRoutes.post('/jellyfin/sync', (req, res) => {
   }
   return res.status(200).json(jellyfinFullScanner.status());
 });
+
+settingsRoutes.post(
+  '/blocklist/sync',
+  isAuthenticated([Permission.ADMIN], { type: 'or' }),
+  async (req, res, next) => {
+    try {
+      if (req.body.cancel) {
+        blocklistSyncJob.cancel();
+        return res.status(200).json(blocklistSyncJob.status());
+      } else if (req.body.start) {
+        // Run sync asynchronously
+        blocklistSyncJob.run().catch((e) => {
+          logger.error('Error running manual blocklist sync', {
+            label: 'Blocklist Sync',
+            errorMessage: e.message,
+          });
+        });
+        return res.status(200).json(blocklistSyncJob.status());
+      }
+      return res.status(200).json(blocklistSyncJob.status());
+    } catch (e) {
+      logger.error('Error handling blocklist sync request', {
+        label: 'Blocklist Sync',
+        errorMessage: e.message,
+      });
+      return next({
+        status: 500,
+        message: 'Failed to handle blocklist sync request',
+      });
+    }
+  }
+);
+
 settingsRoutes.get('/tautulli', (_req, res) => {
   const settings = getSettings();
 

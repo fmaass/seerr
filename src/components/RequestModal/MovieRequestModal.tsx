@@ -57,6 +57,7 @@ const MovieRequestModal = ({
   const [isUpdating, setIsUpdating] = useState(false);
   const [requestOverrides, setRequestOverrides] =
     useState<RequestOverrides | null>(null);
+  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(0); // 0 = keep forever
   const { addToast } = useToasts();
   const { data, error } = useSWR<MovieDetails>(`/api/v1/movie/${tmdbId}`, {
     revalidateOnMount: true,
@@ -95,6 +96,7 @@ const MovieRequestModal = ({
         mediaType: 'movie',
         is4k,
         ...overrideParams,
+        autoDeleteDays: autoDeleteDays > 0 ? autoDeleteDays : undefined,
       });
       mutate('/api/v1/request?filter=all&take=10&sort=modified&skip=0');
       mutate('/api/v1/request/count');
@@ -141,6 +143,7 @@ const MovieRequestModal = ({
     addToast,
     intl,
     hasPermission,
+    autoDeleteDays,
   ]);
 
   const cancelRequest = async () => {
@@ -364,6 +367,37 @@ const MovieRequestModal = ({
           }}
         />
       )}
+      
+      {/* Auto-Delete Option */}
+      <div className="mt-6">
+        <div className="form-row">
+          <label htmlFor="autoDeleteDays" className="text-label">
+            <span className="mr-2">Auto-Delete After:</span>
+            <span className="label-tip">
+              Automatically remove this media after download (optional)
+            </span>
+          </label>
+          <div className="form-input-area">
+            <select
+              id="autoDeleteDays"
+              value={autoDeleteDays}
+              onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
+              className="rounded-md"
+            >
+              <option value={0}>Keep Forever</option>
+              <option value={7}>7 days</option>
+              <option value={30}>30 days</option>
+              <option value={60}>60 days</option>
+              <option value={90}>90 days</option>
+            </select>
+          </div>
+        </div>
+        {autoDeleteDays > 0 && (
+          <div className="mt-2 text-sm text-yellow-500">
+            ⚠️ This media will be automatically deleted after {autoDeleteDays} days
+          </div>
+        )}
+      </div>
     </Modal>
   );
 };

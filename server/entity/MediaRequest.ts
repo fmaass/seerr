@@ -1,12 +1,16 @@
 import TheMovieDb from '@server/api/themoviedb';
 import { ANIME_KEYWORD_ID } from '@server/api/themoviedb/constants';
-import type { TmdbKeyword } from '@server/api/themoviedb/interfaces';
+import type {
+  TmdbKeyword,
+  TmdbMovieDetails,
+} from '@server/api/themoviedb/interfaces';
 import {
   MediaRequestStatus,
   MediaStatus,
   MediaType,
 } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
+import { Blacklist } from '@server/entity/Blacklist';
 import OverrideRule from '@server/entity/OverrideRule';
 import type { MediaRequestBody } from '@server/interfaces/api/requestInterfaces';
 import notificationManager, { Notification } from '@server/lib/notifications';
@@ -122,6 +126,49 @@ export class MediaRequest {
         ? await tmdb.getMovie({ movieId: requestBody.mediaId })
         : await tmdb.getTvShow({ tvId: requestBody.mediaId });
 
+    // Check blocklists for requests
+    // First check Seerr blacklist (database)
+    const blacklistRepository = getRepository(Blacklist);
+    const seerrBlacklisted = await blacklistRepository.findOne({
+      where: {
+        tmdbId: requestBody.mediaId,
+        mediaType: requestBody.mediaType,
+      },
+      select: ['id', 'tmdbId', 'mediaType', 'title', 'blacklistedTags'],
+    });
+
+    if (seerrBlacklisted) {
+      // Determine source of blacklist entry
+      let sourceMessage = 'This media is blacklisted.';
+      if (seerrBlacklisted.blacklistedTags) {
+        if (seerrBlacklisted.blacklistedTags.startsWith('radarr-sync-')) {
+          sourceMessage =
+            'This movie is blocklisted in Radarr and cannot be requested.';
+        } else if (seerrBlacklisted.blacklistedTags.startsWith('sonarr-sync-')) {
+          sourceMessage =
+            'This series is blocklisted in Sonarr and cannot be requested.';
+        }
+      }
+
+      const mediaTitle =
+        requestBody.mediaType === MediaType.MOVIE
+          ? (tmdbMedia as TmdbMovieDetails).title
+          : (tmdbMedia as any).name;
+
+      logger.warn('Request for media blocked due to Seerr blacklist', {
+        tmdbId: requestBody.mediaId,
+        mediaType: requestBody.mediaType,
+        mediaTitle,
+        is4k: requestBody.is4k,
+        source: seerrBlacklisted.blacklistedTags
+          ? seerrBlacklisted.blacklistedTags.split('-')[0]
+          : 'manual',
+        label: 'Media Request',
+      });
+
+      throw new BlacklistedMediaError(sourceMessage);
+    }
+
     let media = await mediaRepository.findOne({
       where: {
         tmdbId: requestBody.mediaId,
@@ -140,9 +187,15 @@ export class MediaRequest {
       });
     } else {
       if (media.status === MediaStatus.BLACKLISTED) {
+        const mediaTitle =
+          requestBody.mediaType === MediaType.MOVIE
+            ? (tmdbMedia as TmdbMovieDetails).title
+            : (tmdbMedia as any).name;
+
         logger.warn('Request for media blocked due to being blacklisted', {
           tmdbId: tmdbMedia.id,
           mediaType: requestBody.mediaType,
+          mediaTitle,
           label: 'Media Request',
         });
 
@@ -504,6 +557,20 @@ export class MediaRequest {
         isAutoRequest: options.isAutoRequest ?? false,
       });
 
+      // Handle auto-delete if specified
+      if (requestBody.autoDeleteDays && requestBody.autoDeleteDays > 0) {
+        const autoDeleteDate = new Date();
+        autoDeleteDate.setDate(autoDeleteDate.getDate() + requestBody.autoDeleteDays);
+        request.autoDeleteDate = autoDeleteDate;
+
+        logger.info('Request created with auto-delete', {
+          label: 'Media Request',
+          tmdbId: requestBody.mediaId,
+          autoDeleteDays: requestBody.autoDeleteDays,
+          autoDeleteDate: autoDeleteDate.toISOString(),
+        });
+      }
+
       await requestRepository.save(request);
       return request;
     }
@@ -605,6 +672,9 @@ export class MediaRequest {
 
   @Column({ default: false })
   public isAutoRequest: boolean;
+
+  @DbAwareColumn({ type: 'datetime', nullable: true })
+  public autoDeleteDate?: Date;
 
   constructor(init?: Partial<MediaRequest>) {
     Object.assign(this, init);

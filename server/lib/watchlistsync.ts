@@ -3,6 +3,7 @@ import { MediaStatus, MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import {
+  BlacklistedMediaError,
   DuplicateMediaRequestError,
   MediaRequest,
   NoSeasonsAvailableError,
@@ -137,6 +138,7 @@ class WatchlistSync {
           case DuplicateMediaRequestError:
           case QuotaRestrictedError:
           case NoSeasonsAvailableError:
+          case BlacklistedMediaError:
             logger.debug('Failed to create media request from watchlist', {
               label: 'Watchlist Sync',
               userId: user.id,

@@ -2,6 +2,7 @@ import Badge from '@app/components/Common/Badge';
 import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
 import ConfirmButton from '@app/components/Common/ConfirmButton';
+import Modal from '@app/components/Common/Modal';
 import RequestModal from '@app/components/RequestModal';
 import StatusBadge from '@app/components/StatusBadge';
 import useDeepLinks from '@app/hooks/useDeepLinks';
@@ -12,6 +13,7 @@ import defineMessages from '@app/utils/defineMessages';
 import { refreshIntervalHelper } from '@app/utils/refreshIntervalHelper';
 import {
   ArrowPathIcon,
+  CalendarIcon,
   CheckIcon,
   PencilIcon,
   TrashIcon,
@@ -303,6 +305,8 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
   const intl = useIntl();
   const { user, hasPermission } = useUser();
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showAutoDeleteModal, setShowAutoDeleteModal] = useState(false);
+  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(30);
   const url =
     request.type === 'movie'
       ? `/api/v1/movie/${request.media.tmdbId}`
@@ -332,6 +336,16 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
       revalidate();
       mutate('/api/v1/request/count');
     }
+  };
+
+  const approveWithAutoDelete = async (): Promise<void> => {
+    await axios.post(`/api/v1/request/${request.id}/approve`, {
+      autoDeleteAfterDays: autoDeleteDays,
+    });
+
+    revalidate();
+    mutate('/api/v1/request/count');
+    setShowAutoDeleteModal(false);
   };
 
   const deleteRequest = async () => {
@@ -726,6 +740,16 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
                   >
                     <CheckIcon />
                     <span>{intl.formatMessage(globalMessages.approve)}</span>
+                  </Button>
+                </span>
+                <span className="w-full">
+                  <Button
+                    className="w-full"
+                    buttonType="primary"
+                    onClick={() => setShowAutoDeleteModal(true)}
+                  >
+                    <CalendarIcon />
+                    <span>Temp</span>
                   </Button>
                 </span>
                 <span className="w-full">
