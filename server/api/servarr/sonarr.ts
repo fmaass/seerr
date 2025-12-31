@@ -400,6 +400,28 @@ class SonarrAPI extends ServarrBase<{
     }
   };
 
+  public addImportExclusion = async (exclusion: {
+    tvdbId: number;
+    title: string;
+  }): Promise<SonarrImportExclusion> => {
+    try {
+      const response = await this.axios.post<SonarrImportExclusion>(
+        '/importlistexclusion',
+        exclusion
+      );
+      logger.info('Added import exclusion to Sonarr', {
+        label: 'Sonarr API',
+        tvdbId: exclusion.tvdbId,
+        title: exclusion.title,
+      });
+      return response.data;
+    } catch (e) {
+      throw new Error(
+        `[Sonarr] Failed to add import exclusion: ${e.message}`
+      );
+    }
+  };
+
   public deleteImportExclusion = async (exclusionId: number): Promise<void> => {
     try {
       await this.axios.delete(`/importlistexclusion/${exclusionId}`);
