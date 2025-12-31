@@ -873,6 +873,130 @@ class BlocklistSyncService {
   }
 
   /**
+   * Sync Seerr blacklist TO Radarr exclusions (export direction)
+   * Adds Seerr movie blacklist entries as exclusions in Radarr
+   */
+  public async syncSeerrToRadarr(): Promise<SyncStats> {
+    logger.info('Syncing Seerr blacklist TO Radarr exclusions', {
+      label: 'Blocklist Sync Export',
+    });
+
+    const settings = getSettings();
+    const stats: SyncStats = {
+      totalServers: 0,
+      totalItems: 0,
+      totalAdded: 0,
+      totalUpdated: 0,
+      totalRemoved: 0,
+      totalErrors: 0,
+    };
+
+    const radarrServers = uniqWith(
+      settings.radarr.filter((server) => server.syncEnabled !== false),
+      (a, b) =>
+        a.hostname === b.hostname &&
+        a.port === b.port &&
+        a.baseUrl === b.baseUrl
+    );
+
+    if (radarrServers.length === 0) {
+      return stats;
+    }
+
+    stats.totalServers = radarrServers.length;
+
+    // Get all movie blacklist entries from Seerr
+    const blacklistRepository = getRepository(Blacklist);
+    const movieBlacklist = await blacklistRepository.find({
+      where: { mediaType: MediaType.MOVIE },
+    });
+
+    stats.totalItems = movieBlacklist.length;
+
+    logger.debug('Found movie blacklist entries to sync', {
+      label: 'Blocklist Sync Export',
+      count: movieBlacklist.length,
+    });
+
+    // Sync to each Radarr server
+    for (const server of radarrServers) {
+      try {
+        const radarr = new RadarrAPI({
+          apiKey: server.apiKey,
+          url: RadarrAPI.buildUrl(server, '/api/v3'),
+        });
+
+        // Get existing exclusions
+        const existingExclusions = await radarr.getImportExclusions();
+        const exclusionMap = new Map(
+          existingExclusions.map((e) => [e.tmdbId, e])
+        );
+
+        let addedCount = 0;
+
+        // Add missing exclusions
+        for (const blacklistEntry of movieBlacklist) {
+          if (!exclusionMap.has(blacklistEntry.tmdbId)) {
+            try {
+              // Get movie year from TMDB
+              const tmdb = new TheMovieDb();
+              const movieDetails = await tmdb.getMovie({
+                movieId: blacklistEntry.tmdbId,
+              });
+
+              await radarr.addImportExclusion({
+                tmdbId: blacklistEntry.tmdbId,
+                movieTitle: blacklistEntry.title || movieDetails.title,
+                movieYear: movieDetails.release_date
+                  ? parseInt(movieDetails.release_date.substring(0, 4))
+                  : new Date().getFullYear(),
+              });
+
+              logger.info('Added Seerr blacklist entry to Radarr exclusions', {
+                label: 'Blocklist Sync Export',
+                serverName: server.name,
+                tmdbId: blacklistEntry.tmdbId,
+                title: blacklistEntry.title,
+              });
+
+              addedCount++;
+              stats.totalAdded++;
+            } catch (error) {
+              logger.warn('Failed to add exclusion to Radarr', {
+                label: 'Blocklist Sync Export',
+                serverName: server.name,
+                tmdbId: blacklistEntry.tmdbId,
+                error: error.message,
+              });
+              stats.totalErrors++;
+            }
+          }
+        }
+
+        logger.info('Completed Seerr → Radarr sync', {
+          label: 'Blocklist Sync Export',
+          serverName: server.name,
+          addedCount,
+        });
+      } catch (error) {
+        logger.error('Error syncing to Radarr', {
+          label: 'Blocklist Sync Export',
+          serverName: server.name,
+          error: error.message,
+        });
+        stats.totalErrors++;
+      }
+    }
+
+    logger.info('Seerr → Radarr sync completed', {
+      label: 'Blocklist Sync Export',
+      stats,
+    });
+
+    return stats;
+  }
+
+  /**
    * Sync Seerr blacklist removals back to Radarr
    * Remove exclusions from Radarr that are no longer blacklisted in Seerr
    * This allows re-requesting previously blacklisted movies

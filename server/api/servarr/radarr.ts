@@ -298,6 +298,29 @@ class RadarrAPI extends ServarrBase<{ movieId: number }> {
     }
   };
 
+  public addImportExclusion = async (exclusion: {
+    tmdbId: number;
+    movieTitle: string;
+    movieYear: number;
+  }): Promise<RadarrImportExclusion> => {
+    try {
+      const response = await this.axios.post<RadarrImportExclusion>(
+        '/exclusions',
+        exclusion
+      );
+      logger.info('Added import exclusion to Radarr', {
+        label: 'Radarr API',
+        tmdbId: exclusion.tmdbId,
+        title: exclusion.movieTitle,
+      });
+      return response.data;
+    } catch (e) {
+      throw new Error(
+        `[Radarr] Failed to add import exclusion: ${e.message}`
+      );
+    }
+  };
+
   public deleteImportExclusion = async (exclusionId: number): Promise<void> => {
     try {
       await this.axios.delete(`/exclusions/${exclusionId}`);
