@@ -205,12 +205,12 @@ const ManageSlideOver = ({
 
   // Get all requests with auto-delete set (any status except DECLINED)
   const autoDeleteRequests = requests.filter(
-    (request) => request.autoDeleteDate
+    (request) => request.autoDeleteDays && request.autoDeleteDays > 0
   );
-  
+
   // Get the first request without auto-delete (to show the option to set it)
   const firstRequestWithoutAutoDelete = requests.find(
-    (request) => !request.autoDeleteDate
+    (request) => !request.autoDeleteDays || request.autoDeleteDays <= 0
   );
 
   const styledPlayCount = (playCount: number): JSX.Element => {

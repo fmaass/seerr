@@ -5,11 +5,12 @@ import Modal from '@app/components/Common/Modal';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
-import { CalendarIcon, TrashIcon, ClockIcon } from '@heroicons/react/24/solid';
+import { CalendarIcon, ClockIcon, TrashIcon } from '@heroicons/react/24/solid';
 import type { MediaRequest } from '@server/entity/MediaRequest';
 import axios from 'axios';
-import { useIntl } from 'react-intl';
 import { useState } from 'react';
+import { useIntl } from 'react-intl';
+import { useToasts } from 'react-toast-notifications';
 
 const messages = defineMessages('components.AutoDeleteBlock', {
   autodelete: 'Auto-Delete',
@@ -17,15 +18,23 @@ const messages = defineMessages('components.AutoDeleteBlock', {
   deleteson: 'Scheduled for {date}',
   cancelautodelete: 'Cancel Auto-Delete',
   setautodelete: 'Set Auto-Delete',
-  autodeletedays: 'Delete after (days)',
+  autodeletedays: 'Delete after',
   autodeletedescription:
-    'Media will be automatically removed from Radarr/Sonarr after the specified time period. Deletion check runs daily at 3:00 AM. Deleted items are added to the blocklist to prevent automatic re-requests.',
+    'Media will be automatically removed after the specified number of days once it becomes available in your library. The countdown starts from when the media is downloaded, not from when the request was made.',
   confirmcancel: 'Are you sure you want to cancel auto-delete?',
   autodeleteactive: 'Auto-Delete Active',
   autodeletenotset: 'No auto-delete scheduled',
   setautodeletemodaltitle: 'Set Auto-Delete',
   expired: 'Expired - pending deletion',
+  waitingforavailability: 'Waiting for media to become available',
+  daysafteravailability:
+    '{days} {days, plural, one {day} other {days}} after availability',
+  successset: 'Auto-delete has been set',
+  successcancelled: 'Auto-delete has been cancelled',
+  error: 'Failed to update auto-delete',
 });
+
+const AUTO_DELETE_DAY_OPTIONS = [7, 14, 30, 60, 90];
 
 interface AutoDeleteBlockProps {
   request: MediaRequest;
@@ -35,84 +44,89 @@ interface AutoDeleteBlockProps {
 const AutoDeleteBlock = ({ request, onUpdate }: AutoDeleteBlockProps) => {
   const intl = useIntl();
   const { hasPermission } = useUser();
+  const { addToast } = useToasts();
   const [isUpdating, setIsUpdating] = useState(false);
   const [showSetModal, setShowSetModal] = useState(false);
-  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(90);
+  const [selectedDays, setSelectedDays] = useState<number>(90);
 
-  // Debug: Log request data on mount
-  console.log('[AutoDeleteBlock] Request data:', {
-    id: request.id,
-    type: request.type,
-    mediaId: request.media?.id,
-    mediaTmdbId: request.media?.tmdbId,
-    autoDeleteDate: request.autoDeleteDate,
-  });
+  const hasAutoDelete = !!(request.autoDeleteDays && request.autoDeleteDays > 0);
+  const mediaAddedAt = request.media?.mediaAddedAt
+    ? new Date(request.media.mediaAddedAt)
+    : null;
+  const countdownStarted = hasAutoDelete && mediaAddedAt !== null;
 
-  // Calculate days remaining
+  // Calculate days remaining based on mediaAddedAt + autoDeleteDays
   const getDaysRemaining = (): number | null => {
-    if (!request.autoDeleteDate) return null;
-    const now = new Date();
-    const deleteDate = new Date(request.autoDeleteDate);
-    const diffTime = deleteDate.getTime() - now.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays;
+    if (!hasAutoDelete || !mediaAddedAt) return null;
+    const expiresAt = new Date(mediaAddedAt);
+    expiresAt.setDate(expiresAt.getDate() + (request.autoDeleteDays ?? 0));
+    const diffTime = expiresAt.getTime() - Date.now();
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  };
+
+  const getExpiresAt = (): Date | null => {
+    if (!hasAutoDelete || !mediaAddedAt) return null;
+    const expiresAt = new Date(mediaAddedAt);
+    expiresAt.setDate(expiresAt.getDate() + (request.autoDeleteDays ?? 0));
+    return expiresAt;
   };
 
   const getProgressPercentage = (): number => {
-    if (!request.autoDeleteDate) return 0;
-    
-    const createdAt = new Date(request.createdAt);
-    const deleteDate = new Date(request.autoDeleteDate);
-    const now = new Date();
-    
-    const totalDuration = deleteDate.getTime() - createdAt.getTime();
-    const elapsed = now.getTime() - createdAt.getTime();
-    
-    const percentage = Math.min(100, Math.max(0, (elapsed / totalDuration) * 100));
-    return percentage;
+    if (!hasAutoDelete || !mediaAddedAt) return 0;
+
+    const totalDuration = (request.autoDeleteDays ?? 0) * 24 * 60 * 60 * 1000;
+    const elapsed = Date.now() - mediaAddedAt.getTime();
+
+    return Math.min(100, Math.max(0, (elapsed / totalDuration) * 100));
   };
 
   const cancelAutoDelete = async () => {
-    console.log('[AutoDeleteBlock] Cancel button clicked');
+    setIsUpdating(true);
     try {
-      console.log('[AutoDeleteBlock] Sending POST to /api/v1/request/auto-delete/' + request.id);
       await axios.post(`/api/v1/request/auto-delete/${request.id}`, {
         days: 0,
       });
-      console.log('[AutoDeleteBlock] Auto-delete cancelled successfully');
-      
-      // Refresh the page with cache-busting to force fresh data
-      window.location.href = window.location.href.split('?')[0] + '?t=' + Date.now();
+      addToast(intl.formatMessage(messages.successcancelled), {
+        appearance: 'success',
+        autoDismiss: true,
+      });
+      onUpdate?.();
     } catch (error) {
-      console.error('[AutoDeleteBlock] Failed to cancel auto-delete:', error);
-      console.error('[AutoDeleteBlock] Error details:', error.response?.data);
-      alert(`❌ Failed to cancel auto-delete: ${error.response?.data?.message || error.message}`);
+      addToast(intl.formatMessage(messages.error), {
+        appearance: 'error',
+        autoDismiss: true,
+      });
+    } finally {
+      setIsUpdating(false);
     }
   };
 
   const setAutoDelete = async () => {
-    console.log('[AutoDeleteBlock] Set button clicked, days:', autoDeleteDays);
+    setIsUpdating(true);
     try {
-      console.log('[AutoDeleteBlock] Sending POST to /api/v1/request/auto-delete/' + request.id);
       await axios.post(`/api/v1/request/auto-delete/${request.id}`, {
-        days: autoDeleteDays,
+        days: selectedDays,
       });
-      console.log('[AutoDeleteBlock] Auto-delete set successfully');
+      addToast(intl.formatMessage(messages.successset), {
+        appearance: 'success',
+        autoDismiss: true,
+      });
       setShowSetModal(false);
-      
-      // Refresh the page with cache-busting to force fresh data
-      window.location.href = window.location.href.split('?')[0] + '?t=' + Date.now();
+      onUpdate?.();
     } catch (error) {
-      console.error('[AutoDeleteBlock] Failed to set auto-delete:', error);
-      console.error('[AutoDeleteBlock] Error details:', error.response?.data);
-      alert(`❌ Failed to set auto-delete: ${error.response?.data?.message || error.message}`);
+      addToast(intl.formatMessage(messages.error), {
+        appearance: 'error',
+        autoDismiss: true,
+      });
+    } finally {
       setIsUpdating(false);
     }
   };
 
   const daysRemaining = getDaysRemaining();
+  const expiresAt = getExpiresAt();
   const progressPercentage = getProgressPercentage();
-  const isExpired = daysRemaining !== null && daysRemaining < 0;
+  const isExpired = daysRemaining !== null && daysRemaining <= 0;
 
   return (
     <>
@@ -124,54 +138,68 @@ const AutoDeleteBlock = ({ request, onUpdate }: AutoDeleteBlockProps) => {
               {intl.formatMessage(messages.autodelete)}
             </span>
           </div>
-          {request.autoDeleteDate && (
+          {hasAutoDelete && (
             <Badge badgeType={isExpired ? 'danger' : 'warning'}>
               {intl.formatMessage(messages.autodeleteactive)}
             </Badge>
           )}
         </div>
 
-        {request.autoDeleteDate ? (
+        {hasAutoDelete ? (
           <>
-            {/* Progress Bar */}
-            <div className="relative mb-3 h-6 min-w-0 overflow-hidden rounded-full bg-gray-700">
-              <div
-                className={`h-6 transition-all duration-200 ease-in-out ${
-                  isExpired ? 'bg-red-600' : 'bg-yellow-600'
-                }`}
-                style={{
-                  width: `${progressPercentage}%`,
-                }}
-              />
-              <div className="absolute inset-0 flex h-6 w-full items-center justify-center text-xs font-semibold">
-                <span>
-                  {isExpired
-                    ? intl.formatMessage(messages.expired)
-                    : daysRemaining !== null &&
-                      intl.formatMessage(messages.deletesin, {
-                        days: daysRemaining,
-                      })}
-                </span>
-              </div>
-            </div>
+            {countdownStarted ? (
+              <>
+                {/* Progress Bar */}
+                <div className="relative mb-3 h-6 min-w-0 overflow-hidden rounded-full bg-gray-700">
+                  <div
+                    className={`h-6 transition-all duration-200 ease-in-out ${
+                      isExpired ? 'bg-red-600' : 'bg-yellow-600'
+                    }`}
+                    style={{
+                      width: `${progressPercentage}%`,
+                    }}
+                  />
+                  <div className="absolute inset-0 flex h-6 w-full items-center justify-center text-xs font-semibold">
+                    <span>
+                      {isExpired
+                        ? intl.formatMessage(messages.expired)
+                        : daysRemaining !== null &&
+                          intl.formatMessage(messages.deletesin, {
+                            days: daysRemaining,
+                          })}
+                    </span>
+                  </div>
+                </div>
 
-            {/* Delete Date */}
-            <div className="mb-3 flex items-center justify-between text-xs text-gray-400">
-              <div className="flex items-center">
-                <CalendarIcon className="mr-1.5 h-4 w-4" />
+                {/* Delete Date */}
+                {expiresAt && (
+                  <div className="mb-3 flex items-center text-xs text-gray-400">
+                    <CalendarIcon className="mr-1.5 h-4 w-4" />
+                    <span>
+                      {intl.formatMessage(messages.deleteson, {
+                        date: intl.formatDate(expiresAt, {
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric',
+                        }),
+                      })}
+                    </span>
+                  </div>
+                )}
+              </>
+            ) : (
+              /* Waiting for media to become available */
+              <div className="mb-3 text-xs text-gray-400">
                 <span>
-                  {intl.formatMessage(messages.deleteson, {
-                    date: intl.formatDate(request.autoDeleteDate, {
-                      year: 'numeric',
-                      month: 'long',
-                      day: 'numeric',
-                      hour: 'numeric',
-                      minute: 'numeric',
-                    }),
-                  })}
+                  {intl.formatMessage(messages.waitingforavailability)}
+                </span>
+                <span className="ml-1 text-yellow-500">
+                  ({intl.formatMessage(messages.daysafteravailability, {
+                    days: request.autoDeleteDays ?? 0,
+                  })})
                 </span>
               </div>
-            </div>
+            )}
 
             {/* Cancel Button */}
             {hasPermission(Permission.MANAGE_REQUESTS) && (
@@ -230,16 +258,17 @@ const AutoDeleteBlock = ({ request, onUpdate }: AutoDeleteBlockProps) => {
               <div className="form-input-area">
                 <select
                   id="autoDeleteDays"
-                  value={autoDeleteDays}
-                  onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
+                  value={selectedDays}
+                  onChange={(e) => setSelectedDays(Number(e.target.value))}
                   className="rounded-md"
                 >
-                  <option value={7}>7 days</option>
-                  <option value={14}>14 days</option>
-                  <option value={30}>30 days</option>
-                  <option value={60}>60 days</option>
-                  <option value={90}>90 days</option>
-                  <option value={180}>180 days</option>
+                  {AUTO_DELETE_DAY_OPTIONS.map((days) => (
+                    <option key={days} value={days}>
+                      {days} {intl.formatMessage(
+                        days === 1 ? { id: 'day', defaultMessage: 'day' } : { id: 'days', defaultMessage: 'days' }
+                      )}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -251,4 +280,3 @@ const AutoDeleteBlock = ({ request, onUpdate }: AutoDeleteBlockProps) => {
 };
 
 export default AutoDeleteBlock;
-

@@ -49,7 +49,16 @@ const messages = defineMessages('components.RequestList.RequestItem', {
   unknowntitle: 'Unknown Title',
   removearr: 'Remove from {arr}',
   profileName: 'Profile',
+  approvetemporary: 'Temporary',
+  approvewithautodelete: 'Approve with Auto-Delete',
+  autodeleteafter: 'Auto-delete after',
+  autodeletedescription:
+    'Media will be automatically removed after this many days once available in your library.',
+  autodeletewarning:
+    'This media will be automatically deleted {days} {days, plural, one {day} other {days}} after it becomes available.',
 });
+
+const AUTO_DELETE_DAY_OPTIONS = [7, 14, 30, 60, 90];
 
 const isMovie = (movie: MovieDetails | TvDetails): movie is MovieDetails => {
   return (movie as MovieDetails).title !== undefined;
@@ -340,7 +349,7 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
 
   const approveWithAutoDelete = async (): Promise<void> => {
     await axios.post(`/api/v1/request/${request.id}/approve`, {
-      autoDeleteAfterDays: autoDeleteDays,
+      autoDeleteDays: autoDeleteDays,
     });
 
     revalidate();
@@ -749,7 +758,7 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
                     onClick={() => setShowAutoDeleteModal(true)}
                   >
                     <CalendarIcon />
-                    <span>Temp</span>
+                    <span>{intl.formatMessage(messages.approvetemporary)}</span>
                   </Button>
                 </span>
                 <span className="w-full">
@@ -794,6 +803,48 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
             )}
         </div>
       </div>
+
+      {/* Auto-Delete Approval Modal */}
+      {showAutoDeleteModal && (
+        <Modal
+          title={intl.formatMessage(messages.approvewithautodelete)}
+          onCancel={() => setShowAutoDeleteModal(false)}
+          onOk={() => approveWithAutoDelete()}
+          okText={intl.formatMessage(globalMessages.approve)}
+          okButtonType="primary"
+          backgroundClickable={false}
+        >
+          <div className="section">
+            <div className="form-row">
+              <label htmlFor="autoDeleteDaysItem" className="text-label">
+                {intl.formatMessage(messages.autodeleteafter)}
+                <span className="label-tip">
+                  {intl.formatMessage(messages.autodeletedescription)}
+                </span>
+              </label>
+              <div className="form-input-area">
+                <select
+                  id="autoDeleteDaysItem"
+                  value={autoDeleteDays}
+                  onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
+                  className="rounded-md"
+                >
+                  {AUTO_DELETE_DAY_OPTIONS.map((days) => (
+                    <option key={days} value={days}>
+                      {days} days
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="mt-4 text-sm text-yellow-500">
+              {intl.formatMessage(messages.autodeletewarning, {
+                days: autoDeleteDays,
+              })}
+            </div>
+          </div>
+        </Modal>
+      )}
     </>
   );
 };

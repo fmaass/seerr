@@ -39,7 +39,15 @@ const messages = defineMessages('components.RequestBlock', {
   decline: 'Decline Request',
   edit: 'Edit Request',
   delete: 'Delete Request',
+  approvewithautodelete: 'Approve with Auto-Delete',
+  autodeleteafter: 'Auto-delete after',
+  autodeletedescription:
+    'Media will be automatically removed after this many days once available in your library.',
+  autodeletewarning:
+    'This media will be automatically deleted {days} {days, plural, one {day} other {days}} after it becomes available.',
 });
+
+const AUTO_DELETE_DAY_OPTIONS = [7, 14, 30, 60, 90];
 
 interface RequestBlockProps {
   request: MediaRequest;
@@ -70,7 +78,7 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
   const approveWithAutoDelete = async (): Promise<void> => {
     setIsUpdating(true);
     await axios.post(`/api/v1/request/${request.id}/approve`, {
-      autoDeleteAfterDays: autoDeleteDays,
+      autoDeleteDays: autoDeleteDays,
     });
 
     if (onUpdate) {
@@ -184,7 +192,7 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
                     <CheckIcon className="icon-sm" />
                   </Button>
                 </Tooltip>
-                <Tooltip content="Approve with Auto-Delete">
+                <Tooltip content={intl.formatMessage(messages.approvewithautodelete)}>
                   <Button
                     buttonType="success"
                     className="mr-1"
@@ -356,10 +364,10 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
       {/* Auto-Delete Modal */}
       {showAutoDeleteModal && (
         <Modal
-          title="Approve with Auto-Delete"
+          title={intl.formatMessage(messages.approvewithautodelete)}
           onCancel={() => setShowAutoDeleteModal(false)}
           onOk={() => approveWithAutoDelete()}
-          okText="Approve"
+          okText={intl.formatMessage(messages.approve)}
           okButtonType="primary"
           loading={isUpdating}
           backgroundClickable={false}
@@ -367,9 +375,9 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
           <div className="section">
             <div className="form-row">
               <label htmlFor="autoDeleteDays" className="text-label">
-                Auto-delete after (days):
+                {intl.formatMessage(messages.autodeleteafter)}
                 <span className="label-tip">
-                  Media will be automatically removed after this many days
+                  {intl.formatMessage(messages.autodeletedescription)}
                 </span>
               </label>
               <div className="form-input-area">
@@ -379,16 +387,18 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
                   onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
                   className="rounded-md"
                 >
-                  <option value={7}>7 days</option>
-                  <option value={30}>30 days</option>
-                  <option value={60}>60 days</option>
-                  <option value={90}>90 days</option>
+                  {AUTO_DELETE_DAY_OPTIONS.map((days) => (
+                    <option key={days} value={days}>
+                      {days} days
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
             <div className="mt-4 text-sm text-yellow-500">
-              ⚠️ This media will be automatically deleted from Radarr/Sonarr after{' '}
-              {autoDeleteDays} days
+              {intl.formatMessage(messages.autodeletewarning, {
+                days: autoDeleteDays,
+              })}
             </div>
           </div>
         </Modal>

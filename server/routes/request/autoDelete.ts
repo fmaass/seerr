@@ -1,3 +1,4 @@
+import type { Request, Response, NextFunction } from 'express';
 import { Router } from 'express';
 import { getRepository } from '@server/datasource';
 import { MediaRequest } from '@server/entity/MediaRequest';
@@ -9,38 +10,37 @@ const autoDeleteRoutes = Router();
 
 /**
  * POST /api/v1/request/auto-delete/:requestId
- * Set auto-delete expiration for a request
- * 
- * Body: { days: number }  // Days until auto-delete (0 or null = remove expiration)
+ * Set auto-delete for a request (countdown starts from when media is available)
+ *
+ * Body: { days: number }  // Days after availability to auto-delete (0 or null = remove)
  */
 autoDeleteRoutes.post(
   '/auto-delete/:requestId',
   isAuthenticated(Permission.MANAGE_REQUESTS),
-  async (req, res, next) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const requestRepository = getRepository(MediaRequest);
 
     try {
       const request = await requestRepository.findOneOrFail({
         where: { id: Number(req.params.requestId) },
+        relations: ['media'],
       });
 
       const days = Number(req.body.days);
 
       if (days > 0) {
-        const autoDeleteDate = new Date();
-        autoDeleteDate.setDate(autoDeleteDate.getDate() + days);
-        request.autoDeleteDate = autoDeleteDate;
+        request.autoDeleteDays = days;
 
-        logger.info('Auto-delete expiration set for request', {
+        logger.info('Auto-delete set for request', {
           label: 'Auto-Delete API',
           requestId: request.id,
           days,
-          autoDeleteDate: autoDeleteDate.toISOString(),
         });
       } else {
+        request.autoDeleteDays = null;
         request.autoDeleteDate = null as any;
 
-        logger.info('Auto-delete expiration removed from request', {
+        logger.info('Auto-delete removed from request', {
           label: 'Auto-Delete API',
           requestId: request.id,
         });
@@ -66,24 +66,34 @@ autoDeleteRoutes.post(
 autoDeleteRoutes.get(
   '/auto-delete/:requestId',
   isAuthenticated(Permission.MANAGE_REQUESTS),
-  async (req, res, next) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const requestRepository = getRepository(MediaRequest);
 
     try {
       const request = await requestRepository.findOneOrFail({
         where: { id: Number(req.params.requestId) },
-        select: ['id', 'autoDeleteDate'],
+        relations: ['media'],
       });
+
+      let daysRemaining: number | null = null;
+      let expiresAt: Date | null = null;
+
+      if (request.autoDeleteDays && request.media?.mediaAddedAt) {
+        const addedAt = new Date(request.media.mediaAddedAt);
+        expiresAt = new Date(addedAt);
+        expiresAt.setDate(expiresAt.getDate() + request.autoDeleteDays);
+        daysRemaining = Math.ceil(
+          (expiresAt.getTime() - Date.now()) / 1000 / 60 / 60 / 24
+        );
+      }
 
       return res.status(200).json({
         requestId: request.id,
-        autoDeleteDate: request.autoDeleteDate,
-        hasExpiration: !!request.autoDeleteDate,
-        daysUntilDeletion: request.autoDeleteDate
-          ? Math.ceil(
-              (request.autoDeleteDate.getTime() - Date.now()) / 1000 / 60 / 60 / 24
-            )
-          : null,
+        autoDeleteDays: request.autoDeleteDays,
+        mediaAddedAt: request.media?.mediaAddedAt ?? null,
+        expiresAt,
+        daysRemaining,
+        countdownStarted: !!request.media?.mediaAddedAt,
       });
     } catch (e) {
       next({ status: 404, message: 'Request not found.' });
@@ -92,4 +102,3 @@ autoDeleteRoutes.get(
 );
 
 export default autoDeleteRoutes;
-

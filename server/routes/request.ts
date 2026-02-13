@@ -668,18 +668,15 @@ requestRoutes.post<{
         case 'approve':
           newStatus = MediaRequestStatus.APPROVED;
           
-          // Handle auto-delete if specified
-          if (req.body.autoDeleteAfterDays && req.body.autoDeleteAfterDays > 0) {
-            const daysToAdd = Number(req.body.autoDeleteAfterDays);
-            const autoDeleteDate = new Date();
-            autoDeleteDate.setDate(autoDeleteDate.getDate() + daysToAdd);
-            request.autoDeleteDate = autoDeleteDate;
+          // Handle auto-delete if specified (countdown starts when media is available)
+          const autoDeleteDays = Number(req.body.autoDeleteDays || req.body.autoDeleteAfterDays || 0);
+          if (autoDeleteDays > 0) {
+            request.autoDeleteDays = autoDeleteDays;
 
             logger.info('Request approved with auto-delete', {
               label: 'Media Request',
               requestId: request.id,
-              autoDeleteAfterDays: daysToAdd,
-              autoDeleteDate: autoDeleteDate.toISOString(),
+              autoDeleteDays,
             });
           }
           break;

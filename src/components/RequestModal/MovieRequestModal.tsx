@@ -35,7 +35,15 @@ const messages = defineMessages('components.RequestModal', {
   requestApproved: 'Request for <strong>{title}</strong> approved!',
   requesterror: 'Something went wrong while submitting the request.',
   pendingapproval: 'Your request is pending approval.',
+  autodeleteafter: 'Auto-Delete After',
+  autodeletedescription:
+    'Automatically remove this media after it becomes available (optional)',
+  keepforever: 'Keep Forever',
+  autodeletewarning:
+    'This media will be automatically deleted {days} {days, plural, one {day} other {days}} after it becomes available.',
 });
+
+const AUTO_DELETE_DAY_OPTIONS = [7, 14, 30, 60, 90];
 
 interface RequestModalProps extends React.HTMLAttributes<HTMLDivElement> {
   tmdbId: number;
@@ -372,9 +380,11 @@ const MovieRequestModal = ({
       <div className="mt-6">
         <div className="form-row">
           <label htmlFor="autoDeleteDays" className="text-label">
-            <span className="mr-2">Auto-Delete After:</span>
+            <span className="mr-2">
+              {intl.formatMessage(messages.autodeleteafter)}
+            </span>
             <span className="label-tip">
-              Automatically remove this media after download (optional)
+              {intl.formatMessage(messages.autodeletedescription)}
             </span>
           </label>
           <div className="form-input-area">
@@ -384,17 +394,22 @@ const MovieRequestModal = ({
               onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
               className="rounded-md"
             >
-              <option value={0}>Keep Forever</option>
-              <option value={7}>7 days</option>
-              <option value={30}>30 days</option>
-              <option value={60}>60 days</option>
-              <option value={90}>90 days</option>
+              <option value={0}>
+                {intl.formatMessage(messages.keepforever)}
+              </option>
+              {AUTO_DELETE_DAY_OPTIONS.map((days) => (
+                <option key={days} value={days}>
+                  {days} days
+                </option>
+              ))}
             </select>
           </div>
         </div>
         {autoDeleteDays > 0 && (
           <div className="mt-2 text-sm text-yellow-500">
-            ⚠️ This media will be automatically deleted after {autoDeleteDays} days
+            {intl.formatMessage(messages.autodeletewarning, {
+              days: autoDeleteDays,
+            })}
           </div>
         )}
       </div>

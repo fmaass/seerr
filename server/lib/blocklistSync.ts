@@ -259,7 +259,6 @@ class BlocklistSyncService {
           continue;
         }
 
-
         // Check if this item is still in Radarr blocklist
         if (!currentTmdbIds.has(item.tmdbId)) {
           try {

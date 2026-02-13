@@ -2,7 +2,6 @@ import RadarrAPI from '@server/api/servarr/radarr';
 import SonarrAPI from '@server/api/servarr/sonarr';
 import { MediaRequestStatus, MediaStatus, MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
-import { Blacklist } from '@server/entity/Blacklist';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import type { RunnableScanner, StatusBase } from '@server/lib/scanners/baseScanner';
@@ -30,56 +29,74 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
       const requestRepository = getRepository(MediaRequest);
       const settings = getSettings();
 
-      // Find all approved requests with expired autoDeleteDate
-      const expiredRequests = await requestRepository
+      // Find all approved requests that have autoDeleteDays set
+      // and where the media is available (has a mediaAddedAt date)
+      const candidates = await requestRepository
         .createQueryBuilder('request')
         .leftJoinAndSelect('request.media', 'media')
         .leftJoinAndSelect('request.requestedBy', 'requestedBy')
         .where('request.status = :status', {
           status: MediaRequestStatus.APPROVED,
         })
-        .andWhere('request.autoDeleteDate IS NOT NULL')
-        .andWhere('request.autoDeleteDate <= :now', {
-          now: new Date(),
-        })
+        .andWhere('request.autoDeleteDays IS NOT NULL')
+        .andWhere('request.autoDeleteDays > 0')
+        .andWhere('media.mediaAddedAt IS NOT NULL')
         .getMany();
 
-      if (expiredRequests.length === 0) {
-        logger.info('No expired media requests found', {
+      if (candidates.length === 0) {
+        logger.info('No auto-delete candidates found', {
           label: 'Auto-Delete Job',
         });
         this.running = false;
         return;
       }
 
-      logger.info('Found expired media requests', {
+      // Filter to only those that have actually expired:
+      // mediaAddedAt + autoDeleteDays <= now
+      const now = new Date();
+      const expiredRequests = candidates.filter((request: MediaRequest) => {
+        const addedAt = new Date(request.media.mediaAddedAt);
+        const expiresAt = new Date(addedAt);
+        expiresAt.setDate(expiresAt.getDate() + (request.autoDeleteDays ?? 0));
+        return expiresAt <= now;
+      });
+
+      if (expiredRequests.length === 0) {
+        logger.info('No expired media requests found (all still within retention period)', {
+          label: 'Auto-Delete Job',
+          candidatesChecked: candidates.length,
+        });
+        this.running = false;
+        return;
+      }
+
+      logger.info('Found expired media requests ready for deletion', {
         label: 'Auto-Delete Job',
         count: expiredRequests.length,
+        candidatesChecked: candidates.length,
       });
 
       let deletedCount = 0;
       let errorCount = 0;
 
-      // Process each expired request
       for (const request of expiredRequests) {
         try {
-          const mediaTitle =
-            request.type === MediaType.MOVIE
-              ? `Movie: ${request.media.tmdbId}`
-              : `Series: ${request.media.tmdbId}`;
+          const addedAt = new Date(request.media.mediaAddedAt);
+          const expiresAt = new Date(addedAt);
+          expiresAt.setDate(expiresAt.getDate() + (request.autoDeleteDays ?? 0));
 
           logger.info('Processing expired media request', {
             label: 'Auto-Delete Job',
             requestId: request.id,
             mediaType: request.type,
             tmdbId: request.media.tmdbId,
-            expirationDate: request.autoDeleteDate,
+            autoDeleteDays: request.autoDeleteDays,
+            mediaAddedAt: addedAt.toISOString(),
+            expiredAt: expiresAt.toISOString(),
             is4k: request.is4k,
           });
 
-          // Delete from Radarr or Sonarr
           if (request.type === MediaType.MOVIE) {
-            // Find Radarr server
             const radarrServer = settings.radarr.find(
               (server) =>
                 server.id === request.serverId && server.is4k === request.is4k
@@ -99,13 +116,11 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
               url: RadarrAPI.buildUrl(radarrServer, '/api/v3'),
             });
 
-            // Get movie from Radarr
             try {
               const radarrMovie = await radarr.getMovieByTmdbId(
                 request.media.tmdbId
               );
 
-              // Delete the movie
               await radarr['axios'].delete(`/movie/${radarrMovie.id}`, {
                 params: {
                   deleteFiles: true,
@@ -120,25 +135,23 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
                 tmdbId: request.media.tmdbId,
                 radarrId: radarrMovie.id,
                 serverName: radarrServer.name,
-                expirationDate: request.autoDeleteDate,
               });
 
               deletedCount++;
             } catch (error) {
-              if (error.message.includes('404') || error.message.includes('not found')) {
+              if (error.message?.includes('404') || error.message?.includes('not found')) {
                 logger.info('Movie already removed from Radarr', {
                   label: 'Auto-Delete Job',
                   requestId: request.id,
                   tmdbId: request.media.tmdbId,
                 });
-                // Still count as success since it's gone
                 deletedCount++;
               } else {
                 throw error;
               }
             }
 
-            // Update media status immediately after deletion
+            // Reset media status after deletion
             const mediaRepository = getRepository(Media);
             const media = await mediaRepository.findOne({
               where: { id: request.media.id },
@@ -149,15 +162,14 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
               media.externalServiceId = null;
               media.externalServiceSlug = null;
               await mediaRepository.save(media);
-              
-              logger.info('Updated media status after auto-delete', {
+
+              logger.info('Reset media status after auto-delete', {
                 label: 'Auto-Delete Job',
                 tmdbId: request.media.tmdbId,
                 newStatus: 'UNKNOWN',
               });
             }
           } else if (request.type === MediaType.TV) {
-            // Find Sonarr server
             const sonarrServer = settings.sonarr.find(
               (server) =>
                 server.id === request.serverId && server.is4k === request.is4k
@@ -177,7 +189,6 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
               url: SonarrAPI.buildUrl(sonarrServer, '/api/v3'),
             });
 
-            // Get series from Sonarr (requires TVDB ID)
             if (!request.media.tvdbId) {
               logger.warn('No TVDB ID found for series, cannot delete', {
                 label: 'Auto-Delete Job',
@@ -192,7 +203,6 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
                 request.media.tvdbId
               );
 
-              // Delete the series
               await sonarr['axios'].delete(`/series/${sonarrSeries.id}`, {
                 params: {
                   deleteFiles: true,
@@ -207,12 +217,11 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
                 tvdbId: request.media.tvdbId,
                 sonarrId: sonarrSeries.id,
                 serverName: sonarrServer.name,
-                expirationDate: request.autoDeleteDate,
               });
 
               deletedCount++;
             } catch (error) {
-              if (error.message.includes('404') || error.message.includes('not found')) {
+              if (error.message?.includes('404') || error.message?.includes('not found')) {
                 logger.info('Series already removed from Sonarr', {
                   label: 'Auto-Delete Job',
                   requestId: request.id,
@@ -223,10 +232,29 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
                 throw error;
               }
             }
+
+            // Reset media status after deletion (same as movies)
+            const mediaRepository = getRepository(Media);
+            const media = await mediaRepository.findOne({
+              where: { id: request.media.id },
+            });
+            if (media) {
+              media.status = MediaStatus.UNKNOWN;
+              media.serviceId = null;
+              media.externalServiceId = null;
+              media.externalServiceSlug = null;
+              await mediaRepository.save(media);
+
+              logger.info('Reset media status after auto-delete', {
+                label: 'Auto-Delete Job',
+                tmdbId: request.media.tmdbId,
+                newStatus: 'UNKNOWN',
+              });
+            }
           }
 
-          // Update request - mark as expired/completed (keep for history)
-          // Don't delete the request itself, just clear the autoDeleteDate
+          // Clear auto-delete fields but keep request for history
+          request.autoDeleteDays = null;
           request.autoDeleteDate = undefined;
           await requestRepository.save(request);
         } catch (error) {
@@ -270,4 +298,3 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
 
 const autoDeleteExpiredJob = new AutoDeleteExpiredJob();
 export default autoDeleteExpiredJob;
-

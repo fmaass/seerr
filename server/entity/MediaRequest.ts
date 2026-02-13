@@ -426,6 +426,17 @@ export class MediaRequest {
         isAutoRequest: options.isAutoRequest ?? false,
       });
 
+      // Handle auto-delete if specified
+      if (requestBody.autoDeleteDays && requestBody.autoDeleteDays > 0) {
+        request.autoDeleteDays = requestBody.autoDeleteDays;
+
+        logger.info('Movie request created with auto-delete', {
+          label: 'Media Request',
+          tmdbId: requestBody.mediaId,
+          autoDeleteDays: requestBody.autoDeleteDays,
+        });
+      }
+
       await requestRepository.save(request);
       return request;
     } else {
@@ -559,15 +570,12 @@ export class MediaRequest {
 
       // Handle auto-delete if specified
       if (requestBody.autoDeleteDays && requestBody.autoDeleteDays > 0) {
-        const autoDeleteDate = new Date();
-        autoDeleteDate.setDate(autoDeleteDate.getDate() + requestBody.autoDeleteDays);
-        request.autoDeleteDate = autoDeleteDate;
+        request.autoDeleteDays = requestBody.autoDeleteDays;
 
-        logger.info('Request created with auto-delete', {
+        logger.info('TV request created with auto-delete', {
           label: 'Media Request',
           tmdbId: requestBody.mediaId,
           autoDeleteDays: requestBody.autoDeleteDays,
-          autoDeleteDate: autoDeleteDate.toISOString(),
         });
       }
 
@@ -675,6 +683,9 @@ export class MediaRequest {
 
   @DbAwareColumn({ type: 'datetime', nullable: true })
   public autoDeleteDate?: Date;
+
+  @Column({ type: 'int', nullable: true })
+  public autoDeleteDays?: number | null;
 
   constructor(init?: Partial<MediaRequest>) {
     Object.assign(this, init);
