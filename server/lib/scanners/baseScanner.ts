@@ -110,7 +110,12 @@ class BaseScanner<T> {
       if (existing) {
         let changedExisting = false;
 
-        if (existing[is4k ? 'status4k' : 'status'] !== MediaStatus.AVAILABLE) {
+        // Don't overwrite BLACKLISTED status - it takes precedence
+        const currentStatus = existing[is4k ? 'status4k' : 'status'];
+        if (
+          currentStatus !== MediaStatus.AVAILABLE &&
+          currentStatus !== MediaStatus.BLACKLISTED
+        ) {
           existing[is4k ? 'status4k' : 'status'] = processing
             ? MediaStatus.PROCESSING
             : MediaStatus.AVAILABLE;

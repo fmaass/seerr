@@ -21,10 +21,10 @@ class BlocklistSyncJob implements RunnableScanner<StatusBase> {
         label: 'Jobs',
       });
 
-      // CRITICAL: Direction 3 must run FIRST to prevent re-adding removed items
-      // Direction 3: Seerr blacklist removals → Remove from Radarr/Sonarr exclusions
-      // This allows re-requesting previously blacklisted items
-      await blocklistSyncService.syncRadarrExclusionRemovals();
+      // DISABLED: Direction 3 (Removal sync)
+      // For TRUE UNION behavior, we never auto-remove exclusions from Radarr
+      // Only manual removal in Radarr UI should remove exclusions
+      // await blocklistSyncService.syncRadarrExclusionRemovals();
 
       // Direction 1: Radarr/Sonarr exclusions → Seerr blacklist
       // Now won't re-add items that were just removed from exclusions
@@ -32,6 +32,10 @@ class BlocklistSyncJob implements RunnableScanner<StatusBase> {
         blocklistSyncService.syncAllRadarrServers(),
         blocklistSyncService.syncAllSonarrServers(),
       ]);
+
+      // Direction 1.5: Seerr blacklist → Radarr/Sonarr exclusions (EXPORT)
+      // Ensures arr services know about all blacklisted items
+      await blocklistSyncService.syncSeerrToRadarr();
 
       // Direction 2: Seerr blacklist → Remove from Radarr/Sonarr library
       // If blocklistEnforceEnabled=true on a server, items WILL be deleted

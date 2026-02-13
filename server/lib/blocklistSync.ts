@@ -147,8 +147,8 @@ class BlocklistSyncService {
       const blacklistRepository = getRepository(Blacklist);
 
       if (exclusions.length === 0) {
-        // Even if no exclusions, we should still check for items to remove
-        // that were previously synced from this server
+        // Even if no exclusions, we should still check for radarr-sync items to remove
+        // CRITICAL: ONLY remove items tagged as radarr-sync, NEVER manual/auto-deleted
         const syncedItems = await blacklistRepository
           .createQueryBuilder('blacklist')
           .where('blacklist.mediaType = :mediaType', {
@@ -159,26 +159,33 @@ class BlocklistSyncService {
           })
           .getMany();
 
+        logger.debug('Radarr has no exclusions, checking for stale radarr-sync entries', {
+          label: 'Blocklist Sync',
+          serverName: server.name,
+          syncedItemsCount: syncedItems.length,
+        });
+
         for (const item of syncedItems) {
-          try {
-            await blacklistRepository.remove(item);
-            result.removed++;
-            logger.debug('Removed movie from blacklist (no longer in Radarr)', {
-              label: 'Blocklist Sync',
-              serverName: server.name,
-              serverId: server.id,
-              tmdbId: item.tmdbId,
-              title: item.title,
-            });
-          } catch (e) {
-            logger.warn('Failed to remove movie from blacklist', {
-              label: 'Blocklist Sync',
-              serverName: server.name,
-              serverId: server.id,
-              tmdbId: item.tmdbId,
-              errorMessage: e.message,
-            });
-            result.errors++;
+          // Double-check tag before removing
+          if (item.blacklistedTags?.startsWith(`radarr-sync-${server.id}-`)) {
+            try {
+              await blacklistRepository.remove(item);
+              result.removed++;
+              logger.info('Removed radarr-sync entry (Radarr has no exclusions)', {
+                label: 'Blocklist Sync',
+                serverName: server.name,
+                tmdbId: item.tmdbId,
+                title: item.title,
+              });
+            } catch (e) {
+              logger.warn('Failed to remove movie from blacklist', {
+                label: 'Blocklist Sync',
+                serverName: server.name,
+                tmdbId: item.tmdbId,
+                errorMessage: e.message,
+              });
+              result.errors++;
+            }
           }
         }
 
@@ -221,7 +228,8 @@ class BlocklistSyncService {
       }
 
       // Remove items that are no longer in Radarr blocklist
-      // Only remove items that were synced from this specific server
+      // CRITICAL: ONLY remove items that were synced from this specific server
+      // NEVER remove manually added or auto-deleted entries
       const syncedItems = await blacklistRepository
         .createQueryBuilder('blacklist')
         .where('blacklist.mediaType = :mediaType', {
@@ -232,18 +240,38 @@ class BlocklistSyncService {
         })
         .getMany();
 
+      logger.debug('Checking for stale radarr-sync entries', {
+        label: 'Blocklist Sync',
+        serverName: server.name,
+        syncedItemsCount: syncedItems.length,
+        currentExclusionsCount: currentTmdbIds.size,
+      });
+
       for (const item of syncedItems) {
+        // Double-check the tag to be absolutely sure
+        if (!item.blacklistedTags?.startsWith(`radarr-sync-${server.id}-`)) {
+          logger.warn('Skipping removal - not a radarr-sync entry', {
+            label: 'Blocklist Sync',
+            tmdbId: item.tmdbId,
+            title: item.title,
+            tags: item.blacklistedTags,
+          });
+          continue;
+        }
+
+
         // Check if this item is still in Radarr blocklist
         if (!currentTmdbIds.has(item.tmdbId)) {
           try {
             await blacklistRepository.remove(item);
             result.removed++;
-            logger.debug('Removed movie from blacklist (no longer in Radarr)', {
+            logger.info('Removed radarr-sync entry from blacklist (no longer in Radarr)', {
               label: 'Blocklist Sync',
               serverName: server.name,
               serverId: server.id,
               tmdbId: item.tmdbId,
               title: item.title,
+              tags: item.blacklistedTags,
             });
           } catch (e) {
             logger.warn('Failed to remove movie from blacklist', {
@@ -317,6 +345,26 @@ class BlocklistSyncService {
       ) {
         existing.blacklistedTags = `radarr-sync-${serverId}-${exclusion.id}`;
         await blacklistRepository.save(existing);
+      }
+
+      // CRITICAL: Also update media status to BLACKLISTED for existing entries
+      // This ensures status is correct even if Plex scanner overwrote it
+      const { MediaStatus: MS } = await import('@server/constants/media');
+      const Media = (await import('@server/entity/Media')).default;
+      const mediaRepository = getRepository(Media);
+      const media = await mediaRepository.findOne({
+        where: { tmdbId: exclusion.tmdbId },
+      });
+      
+      if (media && (media.status !== MS.BLACKLISTED || media.status4k !== MS.BLACKLISTED)) {
+        media.status = MS.BLACKLISTED;
+        media.status4k = MS.BLACKLISTED;
+        await mediaRepository.save(media);
+        logger.info('Updated media status to BLACKLISTED for existing blacklist entry', {
+          label: 'Blocklist Sync',
+          tmdbId: exclusion.tmdbId,
+          title: exclusion.movieTitle,
+        });
       }
 
       return false; // Existing entry updated
@@ -556,17 +604,29 @@ class BlocklistSyncService {
         .getMany();
 
       for (const item of syncedItems) {
+        // Double-check the tag to be absolutely sure
+        if (!item.blacklistedTags?.startsWith(`sonarr-sync-${server.id}-`)) {
+          logger.warn('Skipping removal - not a sonarr-sync entry', {
+            label: 'Blocklist Sync',
+            tmdbId: item.tmdbId,
+            title: item.title,
+            tags: item.blacklistedTags,
+          });
+          continue;
+        }
+
         // Check if this TMDB ID is still in Sonarr blocklist
         if (!currentTmdbIds.has(item.tmdbId)) {
           try {
             await blacklistRepository.remove(item);
             result.removed++;
-            logger.debug('Removed series from blacklist (no longer in Sonarr)', {
+            logger.info('Removed sonarr-sync entry from blacklist (no longer in Sonarr)', {
               label: 'Blocklist Sync',
               serverName: server.name,
               serverId: server.id,
               tmdbId: item.tmdbId,
               title: item.title,
+              tags: item.blacklistedTags,
             });
           } catch (e) {
             logger.warn('Failed to remove series from blacklist', {
@@ -869,6 +929,81 @@ class BlocklistSyncService {
       stats,
     });
 
+    return stats;
+  }
+
+  /**
+   * Sync Seerr blacklist TO Radarr exclusions (export direction)
+   */
+  public async syncSeerrToRadarr(): Promise<SyncStats> {
+    logger.info('Syncing Seerr blacklist TO Radarr exclusions', {
+      label: 'Blocklist Export',
+    });
+
+    const settings = getSettings();
+    const stats: SyncStats = {
+      totalServers: 0,
+      totalItems: 0,
+      totalAdded: 0,
+      totalUpdated: 0,
+      totalRemoved: 0,
+      totalErrors: 0,
+    };
+
+    const radarrServers = uniqWith(
+      settings.radarr.filter((server) => server.syncEnabled !== false),
+      (a, b) =>
+        a.hostname === b.hostname &&
+        a.port === b.port &&
+        a.baseUrl === b.baseUrl
+    );
+
+    if (radarrServers.length === 0) {
+      return stats;
+    }
+
+    const blacklistRepository = getRepository(Blacklist);
+    const movieBlacklist = await blacklistRepository.find({
+      where: { mediaType: MediaType.MOVIE },
+    });
+
+    for (const server of radarrServers) {
+      try {
+        const radarr = new RadarrAPI({
+          apiKey: server.apiKey,
+          url: RadarrAPI.buildUrl(server, '/api/v3'),
+        });
+
+        const existingExclusions = await radarr.getImportExclusions();
+        const exclusionMap = new Map(existingExclusions.map((e) => [e.tmdbId, e]));
+
+        let addedCount = 0;
+        for (const entry of movieBlacklist) {
+          if (!exclusionMap.has(entry.tmdbId)) {
+            try {
+              const tmdb = new TheMovieDb();
+              const movie = await tmdb.getMovie({ movieId: entry.tmdbId });
+              await radarr.addImportExclusion({
+                tmdbId: entry.tmdbId,
+                movieTitle: entry.title || movie.title,
+                movieYear: movie.release_date ? parseInt(movie.release_date.substring(0, 4)) : new Date().getFullYear(),
+              });
+              addedCount++;
+              stats.totalAdded++;
+            } catch (error) {
+              stats.totalErrors++;
+            }
+          }
+        }
+        logger.info('Seerr → Radarr sync complete', {
+          label: 'Blocklist Export',
+          serverName: server.name,
+          addedCount,
+        });
+      } catch (error) {
+        stats.totalErrors++;
+      }
+    }
     return stats;
   }
 

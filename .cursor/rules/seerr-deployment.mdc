@@ -1,0 +1,66 @@
+---
+description: Seerr custom fork deployment workflow for Saturn
+alwaysApply: true
+---
+
+# Seerr Deployment Workflow
+
+This is a custom fork of Seerr (Jellyseerr). The image `seerr-radarr-blocklist:2.3.0-fms.1` is built locally and deployed to Saturn.
+
+## Build & Deploy Steps
+
+### 1. Clean Docker (prevents "no space left" errors)
+
+```bash
+docker system prune -a -f --volumes && docker builder prune -f
+```
+
+### 2. Build image locally (Mac, cross-compile for Saturn's amd64)
+
+```bash
+cd /Users/fabian/projects/seerr
+docker build --platform linux/amd64 -t seerr-radarr-blocklist:2.3.0-fms.1 .
+```
+
+- Do NOT pass `--build-arg COMMIT_TAG`. The Dockerfile hardcodes `commitTag=local` to avoid phantom "update available" banners.
+- The image tag `2.3.0-fms.1` must match what `docker-compose.yml` on Saturn expects.
+
+### 3. Transfer image to Saturn via SSH pipe
+
+```bash
+docker save seerr-radarr-blocklist:2.3.0-fms.1 | ssh saturn.local "sudo /usr/local/bin/docker load"
+```
+
+Do NOT use `scp` (broken on Synology). Do NOT build on Saturn directly (Docker Hub rate limits).
+
+### 4. Recreate the container on Saturn
+
+```bash
+ssh saturn.local "cd /volume1/docker-compose/stacks/sonarr-radarr && sudo /usr/local/bin/docker-compose up -d jellyseerr"
+```
+
+### 5. Verify
+
+```bash
+# Wait ~40s for healthcheck, then:
+ssh saturn.local "sudo /usr/local/bin/docker ps --filter name=jellyseerr --format '{{.Names}} {{.Status}}'"
+ssh saturn.local "sudo /usr/local/bin/docker logs jellyseerr --tail 30 2>&1 | grep -E 'ready|error'"
+```
+
+## Key Paths
+
+| What | Path |
+|---|---|
+| Source code (local) | `/Users/fabian/projects/seerr` |
+| Source code (Saturn, for reference) | `/volume1/docker/seerr-custom/` |
+| Compose file | `/volume1/docker-compose/stacks/sonarr-radarr/docker-compose.yml` |
+| Container config data | `/volume2/nvme2/docker/jellyseerr/config` |
+| Container name | `jellyseerr` |
+| URL | `requests.discomarder.live` |
+
+## Important Notes
+
+- This is a **custom fork** — never replace with the official seerr/jellyseerr image.
+- `commitTag` is hardcoded to `local` in the Dockerfile. Do not change this.
+- The compose service is inside the `sonarr-radarr` stack, not a standalone stack.
+- Saturn clone at `/volume1/docker/seerr-custom/` should track the same branch as deployed. After pushing, also pull there: `ssh saturn.local "cd /volume1/docker/seerr-custom && /usr/local/bin/git fetch origin && /usr/local/bin/git checkout <branch> && /usr/local/bin/git pull"`

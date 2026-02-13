@@ -15,8 +15,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store CI=true pnpm install --prod --
 
 FROM base AS build
 
-ARG COMMIT_TAG
-ENV COMMIT_TAG=${COMMIT_TAG}
+ENV COMMIT_TAG=local
 
 RUN \
   case "${TARGETPLATFORM}" in \
@@ -35,9 +34,7 @@ RUN rm -rf .next/cache
 
 FROM node:22.20.0-alpine3.22@sha256:cb3143549582cc5f74f26f0992cdef4a422b22128cb517f94173a5f910fa4ee7
 ARG SOURCE_DATE_EPOCH
-ARG COMMIT_TAG
 ENV NODE_ENV=production
-ENV COMMIT_TAG=${COMMIT_TAG}
 
 RUN apk add --no-cache tzdata
 
@@ -51,7 +48,7 @@ COPY --chown=node:node --from=build /app/.next ./.next
 COPY --chown=node:node --from=build /app/dist ./dist
 
 RUN touch config/DOCKER && \
-  echo "{\"commitTag\": \"${COMMIT_TAG}\"}" > committag.json
+  echo "{\"commitTag\": \"local\"}" > committag.json
 
 EXPOSE 5055
 

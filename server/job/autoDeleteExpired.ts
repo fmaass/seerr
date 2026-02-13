@@ -1,7 +1,9 @@
 import RadarrAPI from '@server/api/servarr/radarr';
 import SonarrAPI from '@server/api/servarr/sonarr';
-import { MediaRequestStatus, MediaType } from '@server/constants/media';
+import { MediaRequestStatus, MediaStatus, MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
+import { Blacklist } from '@server/entity/Blacklist';
+import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import type { RunnableScanner, StatusBase } from '@server/lib/scanners/baseScanner';
 import { getSettings } from '@server/lib/settings';
@@ -134,6 +136,25 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
               } else {
                 throw error;
               }
+            }
+
+            // Update media status immediately after deletion
+            const mediaRepository = getRepository(Media);
+            const media = await mediaRepository.findOne({
+              where: { id: request.media.id },
+            });
+            if (media) {
+              media.status = MediaStatus.UNKNOWN;
+              media.serviceId = null;
+              media.externalServiceId = null;
+              media.externalServiceSlug = null;
+              await mediaRepository.save(media);
+              
+              logger.info('Updated media status after auto-delete', {
+                label: 'Auto-Delete Job',
+                tmdbId: request.media.tmdbId,
+                newStatus: 'UNKNOWN',
+              });
             }
           } else if (request.type === MediaType.TV) {
             // Find Sonarr server
