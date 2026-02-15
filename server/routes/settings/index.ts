@@ -14,6 +14,7 @@ import type {
   LogsResultsResponse,
   SettingsAboutResponse,
 } from '@server/interfaces/api/settingsInterfaces';
+import blocklistSyncJob from '@server/job/blocklistSync';
 import { scheduledJobs } from '@server/job/schedule';
 import type { AvailableCacheIds } from '@server/lib/cache';
 import cacheManager from '@server/lib/cache';
@@ -41,6 +42,7 @@ import path from 'path';
 import semver from 'semver';
 import { URL } from 'url';
 import { z } from 'zod';
+import blocklistRoutes from './blocklist';
 import metadataRoutes from './metadata';
 import notificationRoutes from './notifications';
 import radarrRoutes from './radarr';
@@ -53,6 +55,7 @@ settingsRoutes.use('/radarr', radarrRoutes);
 settingsRoutes.use('/sonarr', sonarrRoutes);
 settingsRoutes.use('/discover', discoverSettingRoutes);
 settingsRoutes.use('/metadatas', metadataRoutes);
+settingsRoutes.use('/blocklist', blocklistRoutes);
 
 const libraryUpdateSchema = z.object({
   enabled: z.boolean(),

@@ -5,6 +5,7 @@ import type {
   PermissionCheckOptions,
 } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
+import logger from '@server/logger';
 
 export const checkUser: Middleware = async (req, _res, next) => {
   const settings = getSettings();
@@ -20,7 +21,29 @@ export const checkUser: Middleware = async (req, _res, next) => {
       userId = Number(req.header('X-API-User'));
     }
 
+    logger.info('API Key authentication attempt', {
+      label: 'Auth',
+      userId,
+      path: req.path,
+      hasApiKey: !!req.header('X-API-Key'),
+    });
+
     user = await userRepository.findOne({ where: { id: userId } });
+
+    if (!user) {
+      logger.warn('User not found for API key authentication', {
+        label: 'Auth',
+        userId,
+        path: req.path,
+      });
+    } else {
+      logger.info('User loaded via API key', {
+        label: 'Auth',
+        userId: user.id,
+        userPermissions: user.permissions,
+        path: req.path,
+      });
+    }
   } else if (req.session?.userId) {
     const userRepository = getRepository(User);
 
@@ -45,14 +68,37 @@ export const isAuthenticated = (
   options?: PermissionCheckOptions
 ): Middleware => {
   const authMiddleware: Middleware = (req, res, next) => {
-    if (!req.user || !req.user.hasPermission(permissions ?? 0, options)) {
+    if (!req.user) {
+      logger.warn('Authentication failed: no user in request', {
+        label: 'Auth',
+        path: req.path,
+        method: req.method,
+      });
       res.status(403).json({
         status: 403,
         error: 'You do not have permission to access this endpoint',
       });
-    } else {
-      next();
+      return;
     }
+
+    const hasPermission = req.user.hasPermission(permissions ?? 0, options);
+    if (!hasPermission) {
+      logger.warn('Permission check failed', {
+        label: 'Auth',
+        userId: req.user.id,
+        userPermissions: req.user.permissions,
+        requiredPermissions: permissions,
+        path: req.path,
+        method: req.method,
+      });
+      res.status(403).json({
+        status: 403,
+        error: 'You do not have permission to access this endpoint',
+      });
+      return;
+    }
+
+    next();
   };
   return authMiddleware;
 };

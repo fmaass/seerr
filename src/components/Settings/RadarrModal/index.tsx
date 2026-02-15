@@ -6,7 +6,8 @@ import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { isValidURL } from '@app/utils/urlValidationHelper';
 import { Transition } from '@headlessui/react';
-import type { RadarrSettings } from '@server/lib/settings';
+import type { RadarrSettings, MainSettings } from '@server/lib/settings';
+import useSWR from 'swr';
 import axios from 'axios';
 import { Field, Formik } from 'formik';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -83,6 +84,17 @@ const messages = defineMessages('components.Settings.RadarrModal', {
     'Scan Radarr for existing media and request status so users cannot request content already available.',
   enableSearchHelp:
     'Automatically trigger a search in Radarr when a request is approved.',
+  blocklistSyncEnabled: 'Enable Blocklist Sync',
+  blocklistSyncEnabledTip:
+    'Sync Radarr blocklist to Seerr blocklist automatically',
+  blocklistSyncInterval: 'Blocklist Sync Interval (minutes)',
+  blocklistSyncIntervalTip:
+    'How often to sync the blocklist from Radarr (default: 60 minutes)',
+  blocklistEnforceEnabled: 'Enable Two-Way Sync (Enforce Blocklist)',
+  blocklistEnforceEnabledTip:
+    'Remove blocklisted items from Radarr automatically. Items in Seerr blocklist will be deleted from Radarr.',
+  blocklistEnforceWarning:
+    'Warning: This will automatically delete monitored items from Radarr if they are blocklisted in Seerr.',
 });
 
 interface RadarrModalProps {
@@ -102,6 +114,7 @@ const RadarrModal = ({ onClose, radarr, onSave }: RadarrModalProps) => {
     rootFolders: [],
     tags: [],
   });
+  const { data: mainSettings } = useSWR<MainSettings>('/api/v1/settings/main');
 
   const RadarrSettingsSchema = Yup.object().shape({
     name: Yup.string().required(
@@ -242,6 +255,14 @@ const RadarrModal = ({ onClose, radarr, onSave }: RadarrModalProps) => {
           syncEnabled: radarr?.syncEnabled ?? false,
           enableSearch: !radarr?.preventSearch,
           tagRequests: radarr?.tagRequests ?? false,
+          blocklistSyncEnabled:
+            radarr?.blocklistSyncEnabled ?? mainSettings?.blocklistSyncEnabled ?? true,
+          blocklistSyncInterval:
+            radarr?.blocklistSyncInterval ??
+            mainSettings?.blocklistSyncInterval ??
+            60,
+          blocklistEnforceEnabled: radarr?.blocklistEnforceEnabled ?? false,
+          blocklistEnforceMode: radarr?.blocklistEnforceMode ?? 'delete',
         }}
         validationSchema={RadarrSettingsSchema}
         onSubmit={async (values) => {
@@ -268,6 +289,10 @@ const RadarrModal = ({ onClose, radarr, onSave }: RadarrModalProps) => {
               syncEnabled: values.syncEnabled,
               preventSearch: !values.enableSearch,
               tagRequests: values.tagRequests,
+              blocklistSyncEnabled: values.blocklistSyncEnabled,
+              blocklistSyncInterval: Number(values.blocklistSyncInterval),
+              blocklistEnforceEnabled: values.blocklistEnforceEnabled,
+              blocklistEnforceMode: values.blocklistEnforceMode,
             };
             if (!radarr) {
               await axios.post('/api/v1/settings/radarr', submission);
@@ -763,6 +788,69 @@ const RadarrModal = ({ onClose, radarr, onSave }: RadarrModalProps) => {
                       type="checkbox"
                       id="tagRequests"
                       name="tagRequests"
+                    />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label htmlFor="blocklistSyncEnabled" className="checkbox-label">
+                    {intl.formatMessage(messages.blocklistSyncEnabled)}
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.blocklistSyncEnabledTip)}
+                    </span>
+                  </label>
+                  <div className="form-input-area">
+                    <Field
+                      type="checkbox"
+                      id="blocklistSyncEnabled"
+                      name="blocklistSyncEnabled"
+                    />
+                  </div>
+                </div>
+                {values.blocklistSyncEnabled && (
+                  <div className="form-row">
+                    <label htmlFor="blocklistSyncInterval" className="text-label">
+                      {intl.formatMessage(messages.blocklistSyncInterval)}
+                      <span className="label-tip">
+                        {intl.formatMessage(messages.blocklistSyncIntervalTip)}
+                      </span>
+                    </label>
+                    <div className="form-input-area">
+                      <div className="form-input-field">
+                        <Field
+                          id="blocklistSyncInterval"
+                          name="blocklistSyncInterval"
+                          type="text"
+                          inputMode="numeric"
+                          className="short"
+                        />
+                      </div>
+                      {errors.blocklistSyncInterval &&
+                        touched.blocklistSyncInterval &&
+                        typeof errors.blocklistSyncInterval === 'string' && (
+                          <div className="error">
+                            {errors.blocklistSyncInterval}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                )}
+                <div className="form-row">
+                  <label htmlFor="blocklistEnforceEnabled" className="checkbox-label">
+                    {intl.formatMessage(messages.blocklistEnforceEnabled)}
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.blocklistEnforceEnabledTip)}
+                    </span>
+                    {values.blocklistEnforceEnabled && (
+                      <span className="label-tip text-yellow-500 font-bold">
+                        {intl.formatMessage(messages.blocklistEnforceWarning)}
+                      </span>
+                    )}
+                  </label>
+                  <div className="form-input-area">
+                    <Field
+                      type="checkbox"
+                      id="blocklistEnforceEnabled"
+                      name="blocklistEnforceEnabled"
                     />
                   </div>
                 </div>

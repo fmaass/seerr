@@ -27,4 +27,5 @@ export type MediaRequestBody = {
   userId?: number;
   tags?: number[];
   ignoreQuota?: boolean;
+  autoDeleteDays?: number; // Auto-delete after X days (0 or undefined = keep forever)
 };

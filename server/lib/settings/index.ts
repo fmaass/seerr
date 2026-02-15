@@ -84,6 +84,10 @@ export interface DVRSettings {
   preventSearch: boolean;
   tagRequests: boolean;
   overrideRule: number[];
+  blocklistSyncEnabled?: boolean;
+  blocklistSyncInterval?: number;
+  blocklistEnforceEnabled?: boolean;
+  blocklistEnforceMode?: 'delete';
 }
 
 export interface RadarrSettings extends DVRSettings {
@@ -158,6 +162,8 @@ export interface MainSettings {
   locale: string;
   youtubeUrl: string;
   versionCheck: boolean;
+  blocklistSyncEnabled?: boolean;
+  blocklistSyncInterval?: number;
 }
 
 export interface ProxySettings {
@@ -372,7 +378,9 @@ export type JobId =
   | 'jellyfin-full-scan'
   | 'image-cache-cleanup'
   | 'availability-sync'
-  | 'process-blocklisted-tags';
+  | 'process-blocklisted-tags'
+  | 'blocklist-sync'
+  | 'auto-delete-expired';
 
 export interface AllSettings {
   clientId: string;
@@ -436,6 +444,8 @@ class Settings {
         locale: 'en',
         youtubeUrl: '',
         versionCheck: true,
+        blocklistSyncEnabled: true,
+        blocklistSyncInterval: 60,
       },
       plex: {
         name: '',
@@ -613,6 +623,12 @@ class Settings {
         },
         'process-blocklisted-tags': {
           schedule: '0 30 1 */7 * *',
+        },
+        'blocklist-sync': {
+          schedule: '0 0 * * * *',
+        },
+        'auto-delete-expired': {
+          schedule: '0 0 3 * * *',
         },
       },
       network: {
