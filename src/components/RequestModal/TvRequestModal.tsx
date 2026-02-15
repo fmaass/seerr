@@ -50,7 +50,13 @@ const messages = defineMessages('components.RequestModal', {
   autoapproval: 'Automatic Approval',
   requesterror: 'Something went wrong while submitting the request.',
   pendingapproval: 'Your request is pending approval.',
+  autodeleteafter: 'Auto-Delete After',
+  autodeletedescription: 'Automatically remove this media after it becomes available (optional)',
+  keepforever: 'Keep Forever',
+  autodeletewarning: 'This media will be automatically deleted {days} {days, plural, one {day} other {days}} after it becomes available.',
 });
+
+const AUTO_DELETE_DAY_OPTIONS = [7, 14, 30, 60, 90];
 
 interface RequestModalProps extends React.HTMLAttributes<HTMLDivElement> {
   tmdbId: number;
@@ -77,6 +83,7 @@ const TvRequestModal = ({
   const { data, error } = useSWR<TvDetails>(`/api/v1/tv/${tmdbId}`);
   const [requestOverrides, setRequestOverrides] =
     useState<RequestOverrides | null>(null);
+  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(0);
   const [selectedSeasons, setSelectedSeasons] = useState<number[]>(
     editRequest ? editingSeasons : []
   );
@@ -199,6 +206,7 @@ const TvRequestModal = ({
         tvdbId: tvdbId ?? data?.externalIds.tvdbId,
         mediaType: 'tv',
         is4k,
+        autoDeleteDays: autoDeleteDays > 0 ? autoDeleteDays : undefined,
         seasons: settings.currentSettings.partialRequestsEnabled
           ? selectedSeasons.sort((a, b) => a - b)
           : getAllSeasons().filter(
@@ -734,6 +742,37 @@ const TvRequestModal = ({
               : undefined
           }
         />
+      )}
+      {!editRequest && (
+        <div className="mt-4">
+          <label className="block text-sm font-medium text-gray-200">
+            {intl.formatMessage(messages.autodeleteafter)}
+          </label>
+          <p className="mb-2 text-xs text-gray-400">
+            {intl.formatMessage(messages.autodeletedescription)}
+          </p>
+          <select
+            className="rounded-md border border-gray-600 bg-gray-700 px-3 py-1.5 text-sm text-white"
+            value={autoDeleteDays}
+            onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
+          >
+            <option value={0}>
+              {intl.formatMessage(messages.keepforever)}
+            </option>
+            {AUTO_DELETE_DAY_OPTIONS.map((days) => (
+              <option key={days} value={days}>
+                {days} days
+              </option>
+            ))}
+          </select>
+          {autoDeleteDays > 0 && (
+            <div className="mt-2 rounded-md bg-yellow-900/30 p-3 text-sm text-yellow-200">
+              {intl.formatMessage(messages.autodeletewarning, {
+                days: autoDeleteDays,
+              })}
+            </div>
+          )}
+        </div>
       )}
     </Modal>
   );

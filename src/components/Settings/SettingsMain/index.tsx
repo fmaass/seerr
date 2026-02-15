@@ -76,6 +76,12 @@ const messages = defineMessages('components.Settings.SettingsMain', {
     'Base URL for YouTube videos if a self-hosted YouTube instance is used.',
   validationUrl: 'You must provide a valid URL',
   validationUrlTrailingSlash: 'URL must not end in a trailing slash',
+  blocklistSyncEnabled: 'Enable Blocklist Sync',
+  blocklistSyncEnabledTip:
+    'Enable automatic synchronization of Radarr/Sonarr blocklists to Seerr blocklist for all configured servers',
+  blocklistSyncInterval: 'Blocklist Sync Interval (minutes)',
+  blocklistSyncIntervalTip:
+    'How often to sync blocklists from Radarr/Sonarr servers (default: 60 minutes)',
 });
 
 const SettingsMain = () => {
@@ -183,6 +189,8 @@ const SettingsMain = () => {
             enableSpecialEpisodes: data?.enableSpecialEpisodes,
             cacheImages: data?.cacheImages,
             youtubeUrl: data?.youtubeUrl,
+            blocklistSyncEnabled: data?.blocklistSyncEnabled ?? true,
+            blocklistSyncInterval: data?.blocklistSyncInterval ?? 60,
           }}
           enableReinitialize
           validationSchema={MainSettingsSchema}
@@ -205,6 +213,8 @@ const SettingsMain = () => {
                 enableSpecialEpisodes: values.enableSpecialEpisodes,
                 cacheImages: values.cacheImages,
                 youtubeUrl: values.youtubeUrl,
+                blocklistSyncEnabled: values.blocklistSyncEnabled,
+                blocklistSyncInterval: Number(values.blocklistSyncInterval),
               });
               mutate('/api/v1/settings/public');
               mutate('/api/v1/status');
@@ -538,6 +548,58 @@ const SettingsMain = () => {
                     />
                   </div>
                 </div>
+                <div className="form-row">
+                  <label htmlFor="blocklistSyncEnabled" className="checkbox-label">
+                    <span className="mr-2">
+                      {intl.formatMessage(messages.blocklistSyncEnabled)}
+                    </span>
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.blocklistSyncEnabledTip)}
+                    </span>
+                  </label>
+                  <div className="form-input-area">
+                    <Field
+                      type="checkbox"
+                      id="blocklistSyncEnabled"
+                      name="blocklistSyncEnabled"
+                      onChange={() => {
+                        setFieldValue(
+                          'blocklistSyncEnabled',
+                          !values.blocklistSyncEnabled
+                        );
+                      }}
+                    />
+                  </div>
+                </div>
+                {values.blocklistSyncEnabled && (
+                  <div className="form-row">
+                    <label htmlFor="blocklistSyncInterval" className="text-label">
+                      <span className="mr-2">
+                        {intl.formatMessage(messages.blocklistSyncInterval)}
+                      </span>
+                      <span className="label-tip">
+                        {intl.formatMessage(messages.blocklistSyncIntervalTip)}
+                      </span>
+                    </label>
+                    <div className="form-input-area">
+                      <Field
+                        id="blocklistSyncInterval"
+                        name="blocklistSyncInterval"
+                        type="text"
+                        inputMode="numeric"
+                        className="short"
+                        placeholder="60"
+                      />
+                      {errors.blocklistSyncInterval &&
+                        touched.blocklistSyncInterval &&
+                        typeof errors.blocklistSyncInterval === 'string' && (
+                          <div className="error">
+                            {errors.blocklistSyncInterval}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                )}
                 <div className="form-row">
                   <label
                     htmlFor="partialRequestsEnabled"

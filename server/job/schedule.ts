@@ -1,4 +1,6 @@
 import { MediaServerType } from '@server/constants/server';
+import autoDeleteExpiredJob from '@server/job/autoDeleteExpired';
+import blocklistSyncJob from '@server/job/blocklistSync';
 import blocklistedTagsProcessor from '@server/job/blocklistedTagsProcessor';
 import availabilitySync from '@server/lib/availabilitySync';
 import downloadTracker from '@server/lib/downloadtracker';
@@ -257,6 +259,68 @@ export const startJobs = (): void => {
     }),
     running: () => blocklistedTagsProcessor.status().running,
     cancelFn: () => blocklistedTagsProcessor.cancel(),
+  });
+
+  // Sync blocklist from Radarr/Sonarr
+  const blocklistSyncInterval = getSettings().main.blocklistSyncEnabled !== false
+    ? getSettings().main.blocklistSyncInterval ?? 60
+    : null;
+
+  if (blocklistSyncInterval !== null && blocklistSyncInterval > 0) {
+    let blocklistSyncCron: string;
+
+    if (blocklistSyncInterval >= 60) {
+      const hours = Math.floor(blocklistSyncInterval / 60);
+      blocklistSyncCron = `0 0 */${hours} * * *`;
+    } else {
+      blocklistSyncCron = `0 */${blocklistSyncInterval} * * * *`;
+    }
+
+    logger.info('Scheduling blocklist sync job', {
+      label: 'Jobs',
+      interval: blocklistSyncInterval,
+      intervalType: 'minutes',
+      cronSchedule: blocklistSyncCron,
+    });
+
+    scheduledJobs.push({
+      id: 'blocklist-sync',
+      name: 'Blocklist Sync',
+      type: 'process',
+      interval: 'minutes',
+      cronSchedule: blocklistSyncCron,
+      job: schedule.scheduleJob(blocklistSyncCron, () => {
+        logger.info('Starting scheduled job: Blocklist Sync', {
+          label: 'Jobs',
+        });
+        blocklistSyncJob.run();
+      }),
+      running: () => blocklistSyncJob.status().running,
+      cancelFn: () => blocklistSyncJob.cancel(),
+    });
+  } else {
+    logger.info('Blocklist sync job disabled or invalid interval', {
+      label: 'Jobs',
+      blocklistSyncEnabled: getSettings().main.blocklistSyncEnabled,
+      blocklistSyncInterval,
+    });
+  }
+
+  // Auto-delete expired media (runs daily at 3 AM)
+  scheduledJobs.push({
+    id: 'auto-delete-expired',
+    name: 'Auto-Delete Expired Media',
+    type: 'process',
+    interval: 'days',
+    cronSchedule: jobs['auto-delete-expired'].schedule,
+    job: schedule.scheduleJob(jobs['auto-delete-expired'].schedule, () => {
+      logger.info('Starting scheduled job: Auto-Delete Expired Media', {
+        label: 'Jobs',
+      });
+      autoDeleteExpiredJob.run();
+    }),
+    running: () => autoDeleteExpiredJob.status().running,
+    cancelFn: () => autoDeleteExpiredJob.cancel(),
   });
 
   logger.info('Scheduled jobs loaded', { label: 'Jobs' });

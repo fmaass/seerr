@@ -6,7 +6,8 @@ import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
 import { isValidURL } from '@app/utils/urlValidationHelper';
 import { Transition } from '@headlessui/react';
-import type { SonarrSettings } from '@server/lib/settings';
+import type { SonarrSettings, MainSettings } from '@server/lib/settings';
+import useSWR from 'swr';
 import axios from 'axios';
 import { Field, Formik } from 'formik';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -92,6 +93,17 @@ const messages = defineMessages('components.Settings.SonarrModal', {
     'Scan Sonarr for existing media and request status so users cannot request content already available.',
   enableSearchHelp:
     'Automatically trigger a search in Sonarr when a request is approved.',
+  blocklistSyncEnabled: 'Enable Blocklist Sync',
+  blocklistSyncEnabledTip:
+    'Sync Sonarr blocklist to Seerr blocklist automatically',
+  blocklistSyncInterval: 'Blocklist Sync Interval (minutes)',
+  blocklistSyncIntervalTip:
+    'How often to sync the blocklist from Sonarr (default: 60 minutes)',
+  blocklistEnforceEnabled: 'Enable Two-Way Sync (Enforce Blocklist)',
+  blocklistEnforceEnabledTip:
+    'Remove blocklisted items from Sonarr automatically. Items in Seerr blocklist will be deleted from Sonarr.',
+  blocklistEnforceWarning:
+    'Warning: This will automatically delete monitored items from Sonarr if they are blocklisted in Seerr.',
 });
 
 interface SonarrModalProps {
@@ -112,6 +124,7 @@ const SonarrModal = ({ onClose, sonarr, onSave }: SonarrModalProps) => {
     languageProfiles: null,
     tags: [],
   });
+  const { data: mainSettings } = useSWR<MainSettings>('/api/v1/settings/main');
 
   const SonarrSettingsSchema = Yup.object().shape({
     name: Yup.string().required(
@@ -262,6 +275,14 @@ const SonarrModal = ({ onClose, sonarr, onSave }: SonarrModalProps) => {
           enableSearch: !sonarr?.preventSearch,
           tagRequests: sonarr?.tagRequests ?? false,
           monitorNewItems: sonarr?.monitorNewItems ?? 'all',
+          blocklistSyncEnabled:
+            sonarr?.blocklistSyncEnabled ?? mainSettings?.blocklistSyncEnabled ?? true,
+          blocklistSyncInterval:
+            sonarr?.blocklistSyncInterval ??
+            mainSettings?.blocklistSyncInterval ??
+            60,
+          blocklistEnforceEnabled: sonarr?.blocklistEnforceEnabled ?? false,
+          blocklistEnforceMode: sonarr?.blocklistEnforceMode ?? 'delete',
         }}
         validationSchema={SonarrSettingsSchema}
         onSubmit={async (values) => {
@@ -306,6 +327,10 @@ const SonarrModal = ({ onClose, sonarr, onSave }: SonarrModalProps) => {
               preventSearch: !values.enableSearch,
               tagRequests: values.tagRequests,
               monitorNewItems: values.monitorNewItems,
+              blocklistSyncEnabled: values.blocklistSyncEnabled,
+              blocklistSyncInterval: Number(values.blocklistSyncInterval),
+              blocklistEnforceEnabled: values.blocklistEnforceEnabled,
+              blocklistEnforceMode: values.blocklistEnforceMode,
             };
             if (!sonarr) {
               await axios.post('/api/v1/settings/sonarr', submission);
@@ -1100,6 +1125,69 @@ const SonarrModal = ({ onClose, sonarr, onSave }: SonarrModalProps) => {
                       type="checkbox"
                       id="tagRequests"
                       name="tagRequests"
+                    />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label htmlFor="blocklistSyncEnabled" className="checkbox-label">
+                    {intl.formatMessage(messages.blocklistSyncEnabled)}
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.blocklistSyncEnabledTip)}
+                    </span>
+                  </label>
+                  <div className="form-input-area">
+                    <Field
+                      type="checkbox"
+                      id="blocklistSyncEnabled"
+                      name="blocklistSyncEnabled"
+                    />
+                  </div>
+                </div>
+                {values.blocklistSyncEnabled && (
+                  <div className="form-row">
+                    <label htmlFor="blocklistSyncInterval" className="text-label">
+                      {intl.formatMessage(messages.blocklistSyncInterval)}
+                      <span className="label-tip">
+                        {intl.formatMessage(messages.blocklistSyncIntervalTip)}
+                      </span>
+                    </label>
+                    <div className="form-input-area">
+                      <div className="form-input-field">
+                        <Field
+                          id="blocklistSyncInterval"
+                          name="blocklistSyncInterval"
+                          type="text"
+                          inputMode="numeric"
+                          className="short"
+                        />
+                      </div>
+                      {errors.blocklistSyncInterval &&
+                        touched.blocklistSyncInterval &&
+                        typeof errors.blocklistSyncInterval === 'string' && (
+                          <div className="error">
+                            {errors.blocklistSyncInterval}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                )}
+                <div className="form-row">
+                  <label htmlFor="blocklistEnforceEnabled" className="checkbox-label">
+                    {intl.formatMessage(messages.blocklistEnforceEnabled)}
+                    <span className="label-tip">
+                      {intl.formatMessage(messages.blocklistEnforceEnabledTip)}
+                    </span>
+                    {values.blocklistEnforceEnabled && (
+                      <span className="label-tip text-yellow-500 font-bold">
+                        {intl.formatMessage(messages.blocklistEnforceWarning)}
+                      </span>
+                    )}
+                  </label>
+                  <div className="form-input-area">
+                    <Field
+                      type="checkbox"
+                      id="blocklistEnforceEnabled"
+                      name="blocklistEnforceEnabled"
                     />
                   </div>
                 </div>

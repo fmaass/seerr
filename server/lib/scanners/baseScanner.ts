@@ -116,10 +116,12 @@ class BaseScanner<T> {
       if (existing) {
         let changedExisting = false;
 
-        if (existing[is4k ? 'status4k' : 'status'] !== MediaStatus.AVAILABLE) {
-          const statusField = is4k ? 'status4k' : 'status';
-          const previousStatus = existing[statusField];
-
+        const statusField = is4k ? 'status4k' : 'status';
+        const previousStatus = existing[statusField];
+        if (
+          previousStatus !== MediaStatus.AVAILABLE &&
+          previousStatus !== MediaStatus.BLOCKLISTED
+        ) {
           existing[statusField] =
             !processing && hasFile
               ? MediaStatus.AVAILABLE

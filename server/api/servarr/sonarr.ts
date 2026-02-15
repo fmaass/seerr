@@ -29,6 +29,12 @@ interface EpisodeResult {
   id: number;
 }
 
+export interface SonarrImportExclusion {
+  id: number;
+  tvdbId: number;
+  title: string;
+}
+
 export interface SonarrSeries {
   title: string;
   sortTitle: string;
@@ -450,6 +456,79 @@ class SonarrAPI extends ServarrBase<{
       });
     }
   };
+
+  public getImportExclusions = async (): Promise<SonarrImportExclusion[]> => {
+    try {
+      const response = await this.axios.get<SonarrImportExclusion[]>(
+        '/importlistexclusion'
+      );
+      return response.data;
+    } catch (e) {
+      throw new Error(
+        `[Sonarr] Failed to retrieve import exclusions: ${e.message}`
+      );
+    }
+  };
+
+  public addImportExclusion = async (exclusion: {
+    tvdbId: number;
+    title: string;
+  }): Promise<SonarrImportExclusion> => {
+    try {
+      const response = await this.axios.post<SonarrImportExclusion>(
+        '/importlistexclusion',
+        exclusion
+      );
+      logger.info('Added import exclusion to Sonarr', {
+        label: 'Sonarr API',
+        tvdbId: exclusion.tvdbId,
+        title: exclusion.title,
+      });
+      return response.data;
+    } catch (e) {
+      throw new Error(
+        `[Sonarr] Failed to add import exclusion: ${e.message}`
+      );
+    }
+  };
+
+  public deleteImportExclusion = async (exclusionId: number): Promise<void> => {
+    try {
+      await this.axios.delete(`/importlistexclusion/${exclusionId}`);
+      logger.info('Removed import exclusion from Sonarr', {
+        label: 'Sonarr API',
+        exclusionId,
+      });
+    } catch (e) {
+      throw new Error(
+        `[Sonarr] Failed to delete import exclusion: ${e.message}`
+      );
+    }
+  };
+
+  public async isSeriesBlocklisted(tvdbId: number): Promise<boolean> {
+    try {
+      const exclusions = await this.getImportExclusions();
+
+      if (!Array.isArray(exclusions)) {
+        logger.error('Sonarr returned unexpected exclusions format', {
+          label: 'Sonarr API',
+          tvdbId,
+          exclusions,
+        });
+        return false;
+      }
+
+      return exclusions.some((exclusion) => exclusion.tvdbId === tvdbId);
+    } catch (e) {
+      logger.error('Failed to check Sonarr blocklist', {
+        label: 'Sonarr API',
+        errorMessage: e.message,
+        tvdbId,
+      });
+      return false;
+    }
+  }
 }
 
 export default SonarrAPI;
