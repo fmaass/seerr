@@ -215,6 +215,9 @@ class BlocklistedTagProcessor implements RunnableScanner<StatusBase> {
         'blist.tmdbId = media.tmdbId AND blist.mediaType = media.mediaType'
       )
       .where(`blist.blocklistedTags IS NOT NULL`)
+      .andWhere(`blist.blocklistedTags NOT LIKE 'radarr-sync-%'`)
+      .andWhere(`blist.blocklistedTags NOT LIKE 'sonarr-sync-%'`)
+      .andWhere(`blist.blocklistedTags LIKE ',%'`)
       .getMany();
 
     // Batch removes so the query doesn't get too large

@@ -19,6 +19,14 @@ radarrRoutes.post('/', async (req, res) => {
   const lastItem = settings.radarr[settings.radarr.length - 1];
   newRadarr.id = lastItem ? lastItem.id + 1 : 0;
 
+  // Set default values for blocklist sync settings
+  if (newRadarr.blocklistSyncEnabled === undefined) {
+    newRadarr.blocklistSyncEnabled = true;
+  }
+  if (newRadarr.blocklistSyncInterval === undefined) {
+    newRadarr.blocklistSyncInterval = settings.main.blocklistSyncInterval ?? 60;
+  }
+
   // If we are setting this as the default, clear any previous defaults for the same type first
   // ex: if is4k is true, it will only remove defaults for other servers that have is4k set to true
   // and are the default
