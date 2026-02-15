@@ -1,6 +1,7 @@
 import Badge from '@app/components/Common/Badge';
 import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
+import Modal from '@app/components/Common/Modal';
 import Tooltip from '@app/components/Common/Tooltip';
 import RequestModal from '@app/components/RequestModal';
 import useRequestOverride from '@app/hooks/useRequestOverride';
@@ -38,7 +39,15 @@ const messages = defineMessages('components.RequestBlock', {
   decline: 'Decline Request',
   edit: 'Edit Request',
   delete: 'Delete Request',
+  approvewithautodelete: 'Approve with Auto-Delete',
+  autodeleteafter: 'Auto-delete after',
+  autodeletedescription:
+    'Media will be automatically removed after this many days once available in your library.',
+  autodeletewarning:
+    'This media will be automatically deleted {days} {days, plural, one {day} other {days}} after it becomes available.',
 });
+
+const AUTO_DELETE_DAY_OPTIONS = [7, 14, 30, 60, 90];
 
 interface RequestBlockProps {
   request: MediaRequest;
@@ -50,6 +59,8 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
   const intl = useIntl();
   const [isUpdating, setIsUpdating] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showAutoDeleteModal, setShowAutoDeleteModal] = useState(false);
+  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(30);
   const { profile, rootFolder, server, languageProfile } =
     useRequestOverride(request);
 
@@ -62,6 +73,20 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
       mutate('/api/v1/request/count');
     }
     setIsUpdating(false);
+  };
+
+  const approveWithAutoDelete = async (): Promise<void> => {
+    setIsUpdating(true);
+    await axios.post(`/api/v1/request/${request.id}/approve`, {
+      autoDeleteDays: autoDeleteDays,
+    });
+
+    if (onUpdate) {
+      onUpdate();
+      mutate('/api/v1/request/count');
+    }
+    setIsUpdating(false);
+    setShowAutoDeleteModal(false);
   };
 
   const deleteRequest = async () => {
@@ -165,6 +190,16 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
                     disabled={isUpdating}
                   >
                     <CheckIcon className="icon-sm" />
+                  </Button>
+                </Tooltip>
+                <Tooltip content={intl.formatMessage(messages.approvewithautodelete)}>
+                  <Button
+                    buttonType="warning"
+                    className="mr-1"
+                    onClick={() => setShowAutoDeleteModal(true)}
+                    disabled={isUpdating}
+                  >
+                    <CalendarIcon className="icon-sm" />
                   </Button>
                 </Tooltip>
                 <Tooltip content={intl.formatMessage(messages.decline)}>
@@ -325,6 +360,43 @@ const RequestBlock = ({ request, onUpdate }: RequestBlockProps) => {
           </>
         )}
       </div>
+      {showAutoDeleteModal && (
+        <Modal
+          title={intl.formatMessage(messages.approvewithautodelete)}
+          onCancel={() => setShowAutoDeleteModal(false)}
+          onOk={() => approveWithAutoDelete()}
+          okText={intl.formatMessage(messages.approve)}
+          okButtonType="success"
+          okDisabled={isUpdating}
+        >
+          <div className="mt-4 space-y-4">
+            <p className="text-sm text-gray-300">
+              {intl.formatMessage(messages.autodeletedescription)}
+            </p>
+            <div className="flex items-center space-x-2">
+              <label className="text-sm font-medium text-gray-200">
+                {intl.formatMessage(messages.autodeleteafter)}
+              </label>
+              <select
+                className="rounded-md border border-gray-600 bg-gray-700 px-3 py-1.5 text-sm text-white"
+                value={autoDeleteDays}
+                onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
+              >
+                {AUTO_DELETE_DAY_OPTIONS.map((days) => (
+                  <option key={days} value={days}>
+                    {days} days
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="rounded-md bg-yellow-900/30 p-3 text-sm text-yellow-200">
+              {intl.formatMessage(messages.autodeletewarning, {
+                days: autoDeleteDays,
+              })}
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

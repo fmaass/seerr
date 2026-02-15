@@ -1,12 +1,16 @@
 import TheMovieDb from '@server/api/themoviedb';
 import { ANIME_KEYWORD_ID } from '@server/api/themoviedb/constants';
-import type { TmdbKeyword } from '@server/api/themoviedb/interfaces';
+import type {
+  TmdbKeyword,
+  TmdbMovieDetails,
+} from '@server/api/themoviedb/interfaces';
 import {
   MediaRequestStatus,
   MediaStatus,
   MediaType,
 } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
+import { Blocklist } from '@server/entity/Blocklist';
 import OverrideRule from '@server/entity/OverrideRule';
 import type { MediaRequestBody } from '@server/interfaces/api/requestInterfaces';
 import notificationManager, { Notification } from '@server/lib/notifications';
@@ -123,6 +127,48 @@ export class MediaRequest {
         ? await tmdb.getMovie({ movieId: requestBody.mediaId })
         : await tmdb.getTvShow({ tvId: requestBody.mediaId });
 
+    // Check blocklists for requests
+    // First check Seerr blocklist (database)
+    const blocklistRepository = getRepository(Blocklist);
+    const seerrBlocklisted = await blocklistRepository.findOne({
+      where: {
+        tmdbId: requestBody.mediaId,
+        mediaType: requestBody.mediaType,
+      },
+      select: ['id', 'tmdbId', 'mediaType', 'title', 'blocklistedTags'],
+    });
+
+    if (seerrBlocklisted) {
+      let sourceMessage = 'This media is blocklisted.';
+      if (seerrBlocklisted.blocklistedTags) {
+        if (seerrBlocklisted.blocklistedTags.startsWith('radarr-sync-')) {
+          sourceMessage =
+            'This movie is blocklisted in Radarr and cannot be requested.';
+        } else if (seerrBlocklisted.blocklistedTags.startsWith('sonarr-sync-')) {
+          sourceMessage =
+            'This series is blocklisted in Sonarr and cannot be requested.';
+        }
+      }
+
+      const mediaTitle =
+        requestBody.mediaType === MediaType.MOVIE
+          ? (tmdbMedia as TmdbMovieDetails).title
+          : (tmdbMedia as any).name;
+
+      logger.warn('Request for media blocked due to Seerr blocklist', {
+        tmdbId: requestBody.mediaId,
+        mediaType: requestBody.mediaType,
+        mediaTitle,
+        is4k: requestBody.is4k,
+        source: seerrBlocklisted.blocklistedTags
+          ? seerrBlocklisted.blocklistedTags.split('-')[0]
+          : 'manual',
+        label: 'Media Request',
+      });
+
+      throw new BlocklistedMediaError(sourceMessage);
+    }
+
     let media = await mediaRepository.findOne({
       where: {
         tmdbId: requestBody.mediaId,
@@ -141,9 +187,15 @@ export class MediaRequest {
       });
     } else {
       if (media.status === MediaStatus.BLOCKLISTED) {
+        const mediaTitle =
+          requestBody.mediaType === MediaType.MOVIE
+            ? (tmdbMedia as TmdbMovieDetails).title
+            : (tmdbMedia as any).name;
+
         logger.warn('Request for media blocked due to being blocklisted', {
           tmdbId: tmdbMedia.id,
           mediaType: requestBody.mediaType,
+          mediaTitle,
           label: 'Media Request',
         });
 
@@ -374,6 +426,17 @@ export class MediaRequest {
         isAutoRequest: options.isAutoRequest ?? false,
       });
 
+      // Handle auto-delete if specified
+      if (requestBody.autoDeleteDays && requestBody.autoDeleteDays > 0) {
+        request.autoDeleteDays = requestBody.autoDeleteDays;
+
+        logger.info('Movie request created with auto-delete', {
+          label: 'Media Request',
+          tmdbId: requestBody.mediaId,
+          autoDeleteDays: requestBody.autoDeleteDays,
+        });
+      }
+
       await requestRepository.save(request);
       return request;
     } else {
@@ -505,6 +568,17 @@ export class MediaRequest {
         isAutoRequest: options.isAutoRequest ?? false,
       });
 
+      // Handle auto-delete if specified
+      if (requestBody.autoDeleteDays && requestBody.autoDeleteDays > 0) {
+        request.autoDeleteDays = requestBody.autoDeleteDays;
+
+        logger.info('TV request created with auto-delete', {
+          label: 'Media Request',
+          tmdbId: requestBody.mediaId,
+          autoDeleteDays: requestBody.autoDeleteDays,
+        });
+      }
+
       await requestRepository.save(request);
       return request;
     }
@@ -607,6 +681,12 @@ export class MediaRequest {
 
   @Column({ default: false })
   public isAutoRequest: boolean;
+
+  @DbAwareColumn({ type: 'datetime', nullable: true })
+  public autoDeleteDate?: Date;
+
+  @Column({ type: 'int', nullable: true })
+  public autoDeleteDays?: number | null;
 
   constructor(init?: Partial<MediaRequest>) {
     Object.assign(this, init);

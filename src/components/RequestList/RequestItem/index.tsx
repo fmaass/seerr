@@ -2,6 +2,7 @@ import Badge from '@app/components/Common/Badge';
 import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
 import ConfirmButton from '@app/components/Common/ConfirmButton';
+import Modal from '@app/components/Common/Modal';
 import RequestModal from '@app/components/RequestModal';
 import StatusBadge from '@app/components/StatusBadge';
 import useDeepLinks from '@app/hooks/useDeepLinks';
@@ -11,6 +12,7 @@ import defineMessages from '@app/utils/defineMessages';
 import { refreshIntervalHelper } from '@app/utils/refreshIntervalHelper';
 import {
   ArrowPathIcon,
+  CalendarIcon,
   CheckIcon,
   PencilIcon,
   TrashIcon,
@@ -46,7 +48,15 @@ const messages = defineMessages('components.RequestList.RequestItem', {
   unknowntitle: 'Unknown Title',
   removearr: 'Remove from {arr}',
   profileName: 'Profile',
+  approvewithautodelete: 'Approve with Auto-Delete',
+  autodeleteafter: 'Auto-delete after',
+  autodeletedescription:
+    'Media will be automatically removed after this many days once available in your library.',
+  autodeletewarning:
+    'This media will be automatically deleted {days} {days, plural, one {day} other {days}} after it becomes available.',
 });
+
+const AUTO_DELETE_DAY_OPTIONS = [7, 14, 30, 60, 90];
 
 const isMovie = (movie: MovieDetails | TvDetails): movie is MovieDetails => {
   return (movie as MovieDetails).title !== undefined;
@@ -301,6 +311,8 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
   const intl = useIntl();
   const { user, hasPermission } = useUser();
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showAutoDeleteModal, setShowAutoDeleteModal] = useState(false);
+  const [autoDeleteDays, setAutoDeleteDays] = useState<number>(30);
   const url =
     request.type === 'movie'
       ? `/api/v1/movie/${request.media.tmdbId}`
@@ -330,6 +342,17 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
       revalidate();
       mutate('/api/v1/request/count');
     }
+  };
+
+  const approveWithAutoDelete = async (): Promise<void> => {
+    await axios.post(`/api/v1/request/${request.id}/approve`, {
+      autoDeleteDays: autoDeleteDays,
+    });
+
+    revalidate();
+    revalidateList();
+    mutate('/api/v1/request/count');
+    setShowAutoDeleteModal(false);
   };
 
   const deleteRequest = async () => {
@@ -722,6 +745,16 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
                 <span className="w-full">
                   <Button
                     className="w-full"
+                    buttonType="warning"
+                    onClick={() => setShowAutoDeleteModal(true)}
+                  >
+                    <CalendarIcon />
+                    <span>{intl.formatMessage(messages.approvewithautodelete)}</span>
+                  </Button>
+                </span>
+                <span className="w-full">
+                  <Button
+                    className="w-full"
                     buttonType="danger"
                     onClick={() => modifyRequest('decline')}
                   >
@@ -761,6 +794,42 @@ const RequestItem = ({ request, revalidateList }: RequestItemProps) => {
             )}
         </div>
       </div>
+      {showAutoDeleteModal && (
+        <Modal
+          title={intl.formatMessage(messages.approvewithautodelete)}
+          onCancel={() => setShowAutoDeleteModal(false)}
+          onOk={() => approveWithAutoDelete()}
+          okText={intl.formatMessage(globalMessages.approve)}
+          okButtonType="success"
+        >
+          <div className="mt-4 space-y-4">
+            <p className="text-sm text-gray-300">
+              {intl.formatMessage(messages.autodeletedescription)}
+            </p>
+            <div className="flex items-center space-x-2">
+              <label className="text-sm font-medium text-gray-200">
+                {intl.formatMessage(messages.autodeleteafter)}
+              </label>
+              <select
+                className="rounded-md border border-gray-600 bg-gray-700 px-3 py-1.5 text-sm text-white"
+                value={autoDeleteDays}
+                onChange={(e) => setAutoDeleteDays(Number(e.target.value))}
+              >
+                {AUTO_DELETE_DAY_OPTIONS.map((days) => (
+                  <option key={days} value={days}>
+                    {days} days
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="rounded-md bg-yellow-900/30 p-3 text-sm text-yellow-200">
+              {intl.formatMessage(messages.autodeletewarning, {
+                days: autoDeleteDays,
+              })}
+            </div>
+          </div>
+        </Modal>
+      )}
     </>
   );
 };

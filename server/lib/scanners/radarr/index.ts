@@ -65,6 +65,9 @@ class RadarrScanner
           this.items = await this.radarrApi.getMovies();
 
           await this.loop(this.processRadarrMovie.bind(this), { sessionId });
+
+          // Detect movies that were in Radarr but are now missing
+          await this.detectMissingMovies(server, sessionId);
         } else {
           this.log(`Sync not enabled. Skipping Radarr server: ${server.name}`);
         }
@@ -104,6 +107,63 @@ class RadarrScanner
       this.log('Failed to process Radarr media', 'error', {
         errorMessage: e.message,
         title: radarrMovie.title,
+      });
+    }
+  }
+
+  private async detectMissingMovies(
+    server: RadarrSettings,
+    sessionId: string
+  ): Promise<void> {
+    try {
+      const { getRepository } = await import('@server/datasource');
+      const Media = (await import('@server/entity/Media')).default;
+      const { MediaStatus, MediaType } = await import(
+        '@server/constants/media'
+      );
+
+      const mediaRepository = getRepository(Media);
+
+      // Get all movies that have this Radarr server ID and are marked as available/processing
+      const mediaInSeerr = await mediaRepository.find({
+        where: {
+          mediaType: MediaType.MOVIE,
+          serviceId: server.id,
+        },
+      });
+
+      const radarrTmdbIds = new Set(this.items.map((m) => m.tmdbId));
+      let updatedCount = 0;
+
+      for (const media of mediaInSeerr) {
+        // If movie is marked as available/processing but doesn't exist in Radarr anymore
+        if (
+          !radarrTmdbIds.has(media.tmdbId) &&
+          (media.status === MediaStatus.AVAILABLE ||
+            media.status === MediaStatus.PROCESSING)
+        ) {
+          this.log('Detected missing movie, updating status', 'info', {
+            tmdbId: media.tmdbId,
+            oldStatus: media.status,
+          });
+
+          media.status = MediaStatus.UNKNOWN;
+          media.serviceId = null;
+          media.externalServiceId = null;
+          media.externalServiceSlug = null;
+          await mediaRepository.save(media);
+          updatedCount++;
+        }
+      }
+
+      if (updatedCount > 0) {
+        this.log(`Updated status for ${updatedCount} missing movies`, 'info', {
+          serverName: server.name,
+        });
+      }
+    } catch (e) {
+      this.log('Error detecting missing movies', 'error', {
+        errorMessage: e.message,
       });
     }
   }

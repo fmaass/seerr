@@ -26,4 +26,5 @@ export type MediaRequestBody = {
   languageProfileId?: number;
   userId?: number;
   tags?: number[];
+  autoDeleteDays?: number; // Auto-delete after X days (0 or undefined = keep forever)
 };

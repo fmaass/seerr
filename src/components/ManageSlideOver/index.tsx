@@ -1,3 +1,4 @@
+import AutoDeleteBlock from '@app/components/AutoDeleteBlock';
 import BlocklistBlock from '@app/components/BlocklistBlock';
 import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
@@ -75,6 +76,7 @@ const messages = defineMessages('components.ManageSlideOver', {
   playedby: 'Played By',
   movie: 'movie',
   tvshow: 'series',
+  manageModalAutoDelete: 'Auto-Delete',
 });
 
 const isMovie = (movie: MovieDetails | TvDetails): movie is MovieDetails => {
@@ -204,6 +206,14 @@ const ManageSlideOver = ({
       (request) => request.status !== MediaRequestStatus.DECLINED
     ) ?? [];
 
+  const autoDeleteRequests = requests.filter(
+    (request) => request.autoDeleteDays && request.autoDeleteDays > 0
+  );
+
+  const firstRequestWithoutAutoDelete = requests.find(
+    (request) => !request.autoDeleteDays || request.autoDeleteDays <= 0
+  );
+
   const openIssues =
     data.mediaInfo?.issues?.filter(
       (issue) => issue.status === IssueStatus.OPEN
@@ -292,6 +302,37 @@ const ManageSlideOver = ({
               </div>
             </div>
           )}
+        {hasPermission(Permission.MANAGE_REQUESTS) && requests.length > 0 && (
+          <div>
+            <h3 className="mb-2 text-xl font-bold">
+              {intl.formatMessage(messages.manageModalAutoDelete)}
+            </h3>
+            <div className="overflow-hidden rounded-md border border-gray-700 shadow">
+              <ul>
+                {autoDeleteRequests.length > 0 ? (
+                  autoDeleteRequests.map((request) => (
+                    <li
+                      key={`manage-autodelete-${request.id}`}
+                      className="border-b border-gray-700 last:border-b-0"
+                    >
+                    <AutoDeleteBlock
+                      request={request}
+                      onUpdate={() => revalidate()}
+                    />
+                    </li>
+                  ))
+                ) : firstRequestWithoutAutoDelete ? (
+                  <li className="border-b border-gray-700 last:border-b-0">
+                      <AutoDeleteBlock
+                        request={firstRequestWithoutAutoDelete}
+                        onUpdate={() => revalidate()}
+                      />
+                  </li>
+                ) : null}
+              </ul>
+            </div>
+          </div>
+        )}
         {requests.length > 0 && (
           <div>
             <h3 className="mb-2 text-xl font-bold">

@@ -6418,6 +6418,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MediaRequest'
+  /request/auto-delete/{requestId}:
+    post:
+      summary: Set auto-delete for a request
+      description: |
+        Sets or cancels auto-delete for a media request. Media will be automatically deleted from Radarr/Sonarr after the specified number of days.
+
+        Requires the `MANAGE_REQUESTS` permission or `ADMIN`.
+      tags:
+        - request
+      parameters:
+        - in: path
+          name: requestId
+          description: Request ID
+          required: true
+          schema:
+            type: string
+            example: '1'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                days:
+                  type: number
+                  description: Days until auto-delete (0 or null to cancel)
+                  example: 90
+      responses:
+        '200':
+          description: Auto-delete updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaRequest'
+    get:
+      summary: Get auto-delete info for a request
+      description: |
+        Returns auto-delete information for a specific request.
+
+        Requires the `MANAGE_REQUESTS` permission or `ADMIN`.
+      tags:
+        - request
+      parameters:
+        - in: path
+          name: requestId
+          description: Request ID
+          required: true
+          schema:
+            type: string
+            example: '1'
+      responses:
+        '200':
+          description: Auto-delete info returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requestId:
+                    type: number
+                  autoDeleteDate:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  hasExpiration:
+                    type: boolean
+                  daysUntilDeletion:
+                    type: number
+                    nullable: true
   /request/{requestId}/{status}:
     post:
       summary: Update a request's status

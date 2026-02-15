@@ -114,7 +114,11 @@ class BaseScanner<T> {
       if (existing) {
         let changedExisting = false;
 
-        if (existing[is4k ? 'status4k' : 'status'] !== MediaStatus.AVAILABLE) {
+        const currentStatus = existing[is4k ? 'status4k' : 'status'];
+        if (
+          currentStatus !== MediaStatus.AVAILABLE &&
+          currentStatus !== MediaStatus.BLOCKLISTED
+        ) {
           existing[is4k ? 'status4k' : 'status'] = !processing
             ? MediaStatus.AVAILABLE
             : existing[is4k ? 'status4k' : 'status'] === MediaStatus.DELETED

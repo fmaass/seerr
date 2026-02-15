@@ -63,6 +63,13 @@ export interface RadarrMovie {
   };
 }
 
+export interface RadarrImportExclusion {
+  id: number;
+  tmdbId: number;
+  movieTitle: string;
+  movieYear: number;
+}
+
 class RadarrAPI extends ServarrBase<{ movieId: number }> {
   constructor({
     url,
@@ -285,6 +292,80 @@ class RadarrAPI extends ServarrBase<{ movieId: number }> {
       this.removeCache(`/movie/${externalId}`);
     }
   };
+
+  public getImportExclusions = async (): Promise<RadarrImportExclusion[]> => {
+    try {
+      const response = await this.axios.get<RadarrImportExclusion[]>(
+        '/exclusions'
+      );
+      return response.data;
+    } catch (e) {
+      throw new Error(
+        `[Radarr] Failed to retrieve import exclusions: ${e.message}`
+      );
+    }
+  };
+
+  public addImportExclusion = async (exclusion: {
+    tmdbId: number;
+    movieTitle: string;
+    movieYear: number;
+  }): Promise<RadarrImportExclusion> => {
+    try {
+      const response = await this.axios.post<RadarrImportExclusion>(
+        '/exclusions',
+        exclusion
+      );
+      logger.info('Added import exclusion to Radarr', {
+        label: 'Radarr API',
+        tmdbId: exclusion.tmdbId,
+        title: exclusion.movieTitle,
+      });
+      return response.data;
+    } catch (e) {
+      throw new Error(
+        `[Radarr] Failed to add import exclusion: ${e.message}`
+      );
+    }
+  };
+
+  public deleteImportExclusion = async (exclusionId: number): Promise<void> => {
+    try {
+      await this.axios.delete(`/exclusions/${exclusionId}`);
+      logger.info('Removed import exclusion from Radarr', {
+        label: 'Radarr API',
+        exclusionId,
+      });
+    } catch (e) {
+      throw new Error(
+        `[Radarr] Failed to delete import exclusion: ${e.message}`
+      );
+    }
+  };
+
+  public async isMovieBlocklisted(tmdbId: number): Promise<boolean> {
+    try {
+      const exclusions = await this.getImportExclusions();
+
+      if (!Array.isArray(exclusions)) {
+        logger.error('Radarr returned unexpected exclusions format', {
+          label: 'Radarr API',
+          tmdbId,
+          exclusions,
+        });
+        return false;
+      }
+
+      return exclusions.some((exclusion) => exclusion.tmdbId === tmdbId);
+    } catch (e) {
+      logger.error('Failed to check Radarr blocklist', {
+        label: 'Radarr API',
+        errorMessage: e.message,
+        tmdbId,
+      });
+      return false;
+    }
+  }
 }
 
 export default RadarrAPI;

@@ -80,6 +80,48 @@ const studios: Studio[] = [
       'https://image.tmdb.org/t/p/w780_filter(duotone,ffffff,bababa)/1ZXsGaFPgrgS6ZZGS37AqD5uU12.png',
     url: '/discover/movies/studio/41077',
   },
+  {
+    name: 'Neon',
+    image:
+      'https://image.tmdb.org/t/p/w780_filter(duotone,ffffff,bababa)/3K9wCZTyDgop3ITK1rDi6T2PckE.png',
+    url: '/discover/movies/studio/90733',
+  },
+  {
+    name: 'Searchlight Pictures',
+    image:
+      'https://image.tmdb.org/t/p/w780_filter(duotone,ffffff,bababa)/4RgIPr55kBakgupWkzdDxqXJEqr.png',
+    url: '/discover/movies/studio/43',
+  },
+  {
+    name: 'Focus Features',
+    image:
+      'https://image.tmdb.org/t/p/w780_filter(duotone,ffffff,bababa)/xnFIOeq5cKw09kCWqV7foWDe4AA.png',
+    url: '/discover/movies/studio/10146',
+  },
+  {
+    name: 'Blumhouse Productions',
+    image:
+      'https://image.tmdb.org/t/p/w780_filter(duotone,ffffff,bababa)/rzKluDcRkIwHZK2pHsiT667A2Kw.png',
+    url: '/discover/movies/studio/3172',
+  },
+  {
+    name: 'Lionsgate',
+    image:
+      'https://image.tmdb.org/t/p/w780_filter(duotone,ffffff,bababa)/cisLn1YAUuptXVBa0xjq7ST9cH0.png',
+    url: '/discover/movies/studio/1632',
+  },
+  {
+    name: 'Annapurna Pictures',
+    image:
+      'https://image.tmdb.org/t/p/w780_filter(duotone,ffffff,bababa)/pfUB1a62jSMIqp4Xmaq6z2cgW0B.png',
+    url: '/discover/movies/studio/13184',
+  },
+  {
+    name: 'Indian Paintbrush',
+    image:
+      'https://image.tmdb.org/t/p/w780_filter(duotone,ffffff,bababa)/xz60JVoUHpOeg1cJbxzMJiwbuL7.png',
+    url: '/discover/movies/studio/9350',
+  },
 ];
 
 const StudioSlider = () => {
