@@ -14,7 +14,7 @@ import { Blocklist } from '@server/entity/Blocklist';
 import OverrideRule from '@server/entity/OverrideRule';
 import type { MediaRequestBody } from '@server/interfaces/api/requestInterfaces';
 import notificationManager, { Notification } from '@server/lib/notifications';
-import { Permission } from '@server/lib/permissions';
+import { hasPermission, Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { DbAwareColumn, resolveDbType } from '@server/utils/DbColumnHelper';
@@ -140,34 +140,69 @@ export class MediaRequest {
     });
 
     if (seerrBlocklisted) {
-      let sourceMessage = 'This media is blocklisted.';
-      if (seerrBlocklisted.blocklistedTags) {
-        if (seerrBlocklisted.blocklistedTags.startsWith('radarr-sync-')) {
-          sourceMessage =
-            'This movie is blocklisted in Radarr and cannot be requested.';
-        } else if (seerrBlocklisted.blocklistedTags.startsWith('sonarr-sync-')) {
-          sourceMessage =
-            'This series is blocklisted in Sonarr and cannot be requested.';
+      const canOverride = hasPermission(
+        Permission.MANAGE_BLOCKLIST,
+        user.permissions
+      );
+
+      if (canOverride) {
+        // Admin override: remove from blocklist and proceed with request
+        const mediaTitle =
+          requestBody.mediaType === MediaType.MOVIE
+            ? (tmdbMedia as TmdbMovieDetails).title
+            : (tmdbMedia as any).name;
+
+        logger.info('Admin override: removing blocklisted media to fulfil request', {
+          tmdbId: requestBody.mediaId,
+          mediaType: requestBody.mediaType,
+          mediaTitle,
+          userId: user.id,
+          source: seerrBlocklisted.blocklistedTags
+            ? seerrBlocklisted.blocklistedTags.split('-')[0]
+            : 'manual',
+          label: 'Media Request',
+        });
+
+        await blocklistRepository.remove(seerrBlocklisted);
+
+        // Clean up the associated Media entry so it doesn't remain BLOCKLISTED
+        const blockedMedia = await mediaRepository.findOne({
+          where: { tmdbId: requestBody.mediaId },
+        });
+        if (blockedMedia) {
+          await mediaRepository.remove(blockedMedia);
         }
+        // Radarr/Sonarr exclusion cleanup happens on next sync cycle
+      } else {
+        let sourceMessage = 'This media is blocklisted.';
+        if (seerrBlocklisted.blocklistedTags) {
+          if (seerrBlocklisted.blocklistedTags.startsWith('radarr-sync-')) {
+            sourceMessage =
+              'This movie is blocklisted in Radarr and cannot be requested.';
+          } else if (seerrBlocklisted.blocklistedTags.startsWith('sonarr-sync-')) {
+            sourceMessage =
+              'This series is blocklisted in Sonarr and cannot be requested.';
+          }
+        }
+
+        const mediaTitle =
+          requestBody.mediaType === MediaType.MOVIE
+            ? (tmdbMedia as TmdbMovieDetails).title
+            : (tmdbMedia as any).name;
+
+        logger.warn('Request for media blocked due to Seerr blocklist', {
+          tmdbId: requestBody.mediaId,
+          mediaType: requestBody.mediaType,
+          mediaTitle,
+          is4k: requestBody.is4k,
+          source: seerrBlocklisted.blocklistedTags
+            ? seerrBlocklisted.blocklistedTags.split('-')[0]
+            : 'manual',
+          label: 'Media Request',
+        });
+
+        throw new BlocklistedMediaError(sourceMessage);
       }
-
-      const mediaTitle =
-        requestBody.mediaType === MediaType.MOVIE
-          ? (tmdbMedia as TmdbMovieDetails).title
-          : (tmdbMedia as any).name;
-
-      logger.warn('Request for media blocked due to Seerr blocklist', {
-        tmdbId: requestBody.mediaId,
-        mediaType: requestBody.mediaType,
-        mediaTitle,
-        is4k: requestBody.is4k,
-        source: seerrBlocklisted.blocklistedTags
-          ? seerrBlocklisted.blocklistedTags.split('-')[0]
-          : 'manual',
-        label: 'Media Request',
-      });
-
-      throw new BlocklistedMediaError(sourceMessage);
     }
 
     let media = await mediaRepository.findOne({
@@ -188,19 +223,35 @@ export class MediaRequest {
       });
     } else {
       if (media.status === MediaStatus.BLOCKLISTED) {
-        const mediaTitle =
-          requestBody.mediaType === MediaType.MOVIE
-            ? (tmdbMedia as TmdbMovieDetails).title
-            : (tmdbMedia as any).name;
+        const canOverride = hasPermission(
+          Permission.MANAGE_BLOCKLIST,
+          user.permissions
+        );
 
-        logger.warn('Request for media blocked due to being blocklisted', {
-          tmdbId: tmdbMedia.id,
-          mediaType: requestBody.mediaType,
-          mediaTitle,
-          label: 'Media Request',
-        });
+        if (canOverride) {
+          logger.info('Admin override: resetting BLOCKLISTED media status to fulfil request', {
+            tmdbId: tmdbMedia.id,
+            mediaType: requestBody.mediaType,
+            userId: user.id,
+            label: 'Media Request',
+          });
+          media.status = MediaStatus.PENDING;
+          media.status4k = MediaStatus.UNKNOWN;
+        } else {
+          const mediaTitle =
+            requestBody.mediaType === MediaType.MOVIE
+              ? (tmdbMedia as TmdbMovieDetails).title
+              : (tmdbMedia as any).name;
 
-        throw new BlocklistedMediaError('This media is blocklisted.');
+          logger.warn('Request for media blocked due to being blocklisted', {
+            tmdbId: tmdbMedia.id,
+            mediaType: requestBody.mediaType,
+            mediaTitle,
+            label: 'Media Request',
+          });
+
+          throw new BlocklistedMediaError('This media is blocklisted.');
+        }
       }
 
       if (
