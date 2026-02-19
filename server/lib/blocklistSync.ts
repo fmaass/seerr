@@ -393,11 +393,12 @@ class BlocklistSyncService {
 
     for (const server of sonarrServers) {
       try {
-        // Sonarr sync would go here - similar pattern to Radarr
-        logger.debug('Sonarr blocklist sync not yet implemented', {
-          label: 'Blocklist Sync',
-          serverName: server.name,
-        });
+        const result = await this.syncSonarrServer(server);
+        stats.totalItems += result.total;
+        stats.totalAdded += result.added;
+        stats.totalUpdated += result.updated;
+        stats.totalRemoved += result.removed;
+        stats.totalErrors += result.errors;
       } catch (e) {
         logger.error('Error syncing Sonarr server blocklist', {
           label: 'Blocklist Sync',
@@ -409,7 +410,257 @@ class BlocklistSyncService {
       }
     }
 
+    logger.info('Sonarr blocklist sync completed', {
+      label: 'Blocklist Sync',
+      stats,
+    });
+
     return stats;
+  }
+
+  public async syncSonarrServer(server: SonarrSettings): Promise<SyncResult> {
+    const result: SyncResult = {
+      serverName: server.name,
+      serverId: server.id,
+      added: 0,
+      updated: 0,
+      removed: 0,
+      errors: 0,
+      total: 0,
+    };
+
+    try {
+      logger.debug('Starting blocklist sync for Sonarr server', {
+        label: 'Blocklist Sync',
+        serverName: server.name,
+        serverId: server.id,
+      });
+
+      const sonarrAPI = new SonarrAPI({
+        apiKey: server.apiKey,
+        url: SonarrAPI.buildUrl(server, '/api/v3'),
+      });
+
+      const exclusions = await sonarrAPI.getImportExclusions();
+      result.total = exclusions.length;
+
+      if (!Array.isArray(exclusions)) {
+        logger.error('Sonarr returned unexpected exclusions format', {
+          label: 'Blocklist Sync',
+          serverName: server.name,
+          serverId: server.id,
+        });
+        result.errors = 1;
+        return result;
+      }
+
+      const blocklistRepository = getRepository(Blocklist);
+
+      if (exclusions.length === 0) {
+        const syncedItems = await blocklistRepository
+          .createQueryBuilder('blocklist')
+          .where('blocklist.mediaType = :mediaType', {
+            mediaType: MediaType.TV,
+          })
+          .andWhere('blocklist.blocklistedTags LIKE :tagPattern', {
+            tagPattern: `sonarr-sync-${server.id}-%`,
+          })
+          .getMany();
+
+        for (const item of syncedItems) {
+          if (item.blocklistedTags?.startsWith(`sonarr-sync-${server.id}-`)) {
+            try {
+              await this.removeBlocklistEntry(item, blocklistRepository);
+              result.removed++;
+              logger.info('Removed sonarr-sync entry (Sonarr has no exclusions)', {
+                label: 'Blocklist Sync',
+                serverName: server.name,
+                tmdbId: item.tmdbId,
+                title: item.title,
+              });
+            } catch (e) {
+              logger.warn('Failed to remove TV show from blocklist', {
+                label: 'Blocklist Sync',
+                serverName: server.name,
+                tmdbId: item.tmdbId,
+                errorMessage: e.message,
+              });
+              result.errors++;
+            }
+          }
+        }
+
+        return result;
+      }
+
+      // Build a set of exclusion IDs for stale entry detection
+      const currentExclusionIds = new Set(
+        exclusions.map((e) => e.id)
+      );
+
+      for (const exclusion of exclusions) {
+        try {
+          const wasNew = await this.syncTvShow(
+            exclusion,
+            blocklistRepository,
+            server.id
+          );
+          if (wasNew === true) {
+            result.added++;
+          } else if (wasNew === false) {
+            result.updated++;
+          }
+          // wasNew === null means unresolvable (skipped)
+        } catch (e) {
+          logger.warn('Failed to sync TV show to blocklist', {
+            label: 'Blocklist Sync',
+            serverName: server.name,
+            serverId: server.id,
+            tvdbId: exclusion.tvdbId,
+            title: exclusion.title,
+            errorMessage: e.message,
+          });
+          result.errors++;
+        }
+      }
+
+      // Remove stale sonarr-sync entries no longer in Sonarr
+      const syncedItems = await blocklistRepository
+        .createQueryBuilder('blocklist')
+        .where('blocklist.mediaType = :mediaType', {
+          mediaType: MediaType.TV,
+        })
+        .andWhere('blocklist.blocklistedTags LIKE :tagPattern', {
+          tagPattern: `sonarr-sync-${server.id}-%`,
+        })
+        .getMany();
+
+      for (const item of syncedItems) {
+        if (!item.blocklistedTags?.startsWith(`sonarr-sync-${server.id}-`)) {
+          continue;
+        }
+
+        // Extract the exclusion ID from the tag: sonarr-sync-{serverId}-{exclusionId}
+        const tagParts = item.blocklistedTags.split('-');
+        const exclusionId = parseInt(tagParts[tagParts.length - 1], 10);
+
+        if (!isNaN(exclusionId) && !currentExclusionIds.has(exclusionId)) {
+          try {
+            await this.removeBlocklistEntry(item, blocklistRepository);
+            result.removed++;
+            logger.info('Removed sonarr-sync entry from blocklist (no longer in Sonarr)', {
+              label: 'Blocklist Sync',
+              serverName: server.name,
+              serverId: server.id,
+              tmdbId: item.tmdbId,
+              title: item.title,
+              tags: item.blocklistedTags,
+            });
+          } catch (e) {
+            logger.warn('Failed to remove TV show from blocklist', {
+              label: 'Blocklist Sync',
+              serverName: server.name,
+              serverId: server.id,
+              tmdbId: item.tmdbId,
+              errorMessage: e.message,
+            });
+            result.errors++;
+          }
+        }
+      }
+
+      logger.info('Blocklist sync completed for Sonarr server', {
+        label: 'Blocklist Sync',
+        serverName: server.name,
+        serverId: server.id,
+        result,
+      });
+
+      return result;
+    } catch (e) {
+      logger.error('Error syncing Sonarr server blocklist', {
+        label: 'Blocklist Sync',
+        serverName: server.name,
+        serverId: server.id,
+        errorMessage: e.message,
+      });
+      result.errors = result.total;
+      return result;
+    }
+  }
+
+  /**
+   * Sync a single Sonarr exclusion to Seerr blocklist.
+   * Resolves TVDB ID to TMDB ID via TMDB API.
+   * Returns true if new, false if updated, null if unresolvable.
+   */
+  private async syncTvShow(
+    exclusion: SonarrImportExclusion,
+    blocklistRepository: ReturnType<typeof getRepository<Blocklist>>,
+    serverId: number
+  ): Promise<boolean | null> {
+    const expectedTag = `sonarr-sync-${serverId}-${exclusion.id}`;
+
+    // Resolve TVDB → TMDB
+    const tmdb = new TheMovieDb();
+    let tmdbId: number;
+
+    try {
+      const extResponse = await tmdb.getByExternalId({
+        externalId: exclusion.tvdbId,
+        type: 'tvdb',
+      });
+
+      if (!extResponse.tv_results || extResponse.tv_results.length === 0) {
+        logger.debug('Could not resolve TVDB ID to TMDB — skipping exclusion', {
+          label: 'Blocklist Sync',
+          tvdbId: exclusion.tvdbId,
+          title: exclusion.title,
+        });
+        return null;
+      }
+
+      tmdbId = extResponse.tv_results[0].id;
+    } catch (e) {
+      logger.debug('TMDB lookup failed for Sonarr exclusion — skipping', {
+        label: 'Blocklist Sync',
+        tvdbId: exclusion.tvdbId,
+        title: exclusion.title,
+        errorMessage: e.message,
+      });
+      return null;
+    }
+
+    const existing = await blocklistRepository.findOne({
+      where: { tmdbId },
+    });
+
+    if (existing) {
+      if (existing.blocklistedTags !== expectedTag) {
+        existing.blocklistedTags = expectedTag;
+        await blocklistRepository.save(existing);
+      }
+      return false;
+    }
+
+    await Blocklist.addToBlocklist({
+      blocklistRequest: {
+        tmdbId,
+        mediaType: MediaType.TV,
+        title: exclusion.title || `TVDB ${exclusion.tvdbId}`,
+        blocklistedTags: expectedTag,
+      },
+    });
+
+    logger.info('Added TV show to blocklist from Sonarr exclusion', {
+      label: 'Blocklist Sync',
+      tmdbId,
+      tvdbId: exclusion.tvdbId,
+      title: exclusion.title,
+      serverId,
+    });
+
+    return true;
   }
 
   public async enforceRadarrBlocklist(): Promise<SyncStats> {
@@ -622,6 +873,183 @@ class BlocklistSyncService {
     return stats;
   }
 
+  public async syncSeerrToSonarr(): Promise<SyncStats> {
+    logger.info('Syncing Seerr blocklist TO Sonarr exclusions', {
+      label: 'Blocklist Export',
+    });
+
+    const settings = getSettings();
+    const stats: SyncStats = {
+      totalServers: 0,
+      totalItems: 0,
+      totalAdded: 0,
+      totalUpdated: 0,
+      totalRemoved: 0,
+      totalErrors: 0,
+    };
+
+    const sonarrServers = uniqWith(
+      settings.sonarr.filter((server) => server.syncEnabled !== false),
+      (a, b) =>
+        a.hostname === b.hostname &&
+        a.port === b.port &&
+        a.baseUrl === b.baseUrl
+    );
+
+    if (sonarrServers.length === 0) {
+      return stats;
+    }
+
+    const blocklistRepository = getRepository(Blocklist);
+    const tvBlocklist = await blocklistRepository.find({
+      where: { mediaType: MediaType.TV },
+    });
+
+    for (const server of sonarrServers) {
+      try {
+        const sonarr = new SonarrAPI({
+          apiKey: server.apiKey,
+          url: SonarrAPI.buildUrl(server, '/api/v3'),
+        });
+
+        const existingExclusions = await sonarr.getImportExclusions();
+        const exclusionByTvdb = new Map(
+          existingExclusions.map((e) => [e.tvdbId, e])
+        );
+
+        let addedCount = 0;
+        for (const entry of tvBlocklist) {
+          try {
+            // Resolve TMDB → TVDB to check if already excluded
+            const tmdb = new TheMovieDb();
+            const tvShow = await tmdb.getTvShow({ tvId: entry.tmdbId });
+            const tvdbId = tvShow.external_ids?.tvdb_id;
+
+            if (!tvdbId) {
+              continue;
+            }
+
+            if (!exclusionByTvdb.has(tvdbId)) {
+              await sonarr.addImportExclusion({
+                tvdbId,
+                title: entry.title || tvShow.name,
+              });
+              addedCount++;
+              stats.totalAdded++;
+            }
+          } catch (error) {
+            stats.totalErrors++;
+          }
+        }
+
+        logger.info('Seerr → Sonarr sync complete', {
+          label: 'Blocklist Export',
+          serverName: server.name,
+          addedCount,
+        });
+      } catch (error) {
+        stats.totalErrors++;
+      }
+    }
+    return stats;
+  }
+
+  public async syncSonarrExclusionRemovals(): Promise<SyncStats> {
+    logger.info('Syncing blocklist removals to Sonarr', {
+      label: 'Blocklist Sync Removals',
+    });
+
+    const settings = getSettings();
+    const stats: SyncStats = {
+      totalServers: 0,
+      totalItems: 0,
+      totalAdded: 0,
+      totalUpdated: 0,
+      totalRemoved: 0,
+      totalErrors: 0,
+    };
+
+    const sonarrServers = uniqWith(
+      settings.sonarr.filter((server) => server.syncEnabled !== false),
+      (a, b) =>
+        a.hostname === b.hostname &&
+        a.port === b.port &&
+        a.baseUrl === b.baseUrl
+    );
+
+    if (sonarrServers.length === 0) {
+      return stats;
+    }
+
+    stats.totalServers = sonarrServers.length;
+
+    const blocklistRepository = getRepository(Blocklist);
+    const blocklistedTv = await blocklistRepository.find({
+      where: { mediaType: MediaType.TV },
+      select: ['tmdbId', 'blocklistedTags'],
+    });
+
+    // Build a TMDB ID set for quick lookup
+    const blocklistTmdbIds = new Set(blocklistedTv.map((item) => item.tmdbId));
+
+    for (const server of sonarrServers) {
+      try {
+        const sonarr = new SonarrAPI({
+          apiKey: server.apiKey,
+          url: SonarrAPI.buildUrl(server, '/api/v3'),
+        });
+
+        const exclusions = await sonarr.getImportExclusions();
+        let removedCount = 0;
+
+        for (const exclusion of exclusions) {
+          try {
+            // Resolve TVDB → TMDB to check against blocklist
+            const tmdb = new TheMovieDb();
+            const extResponse = await tmdb.getByExternalId({
+              externalId: exclusion.tvdbId,
+              type: 'tvdb',
+            });
+
+            const tmdbId = extResponse.tv_results?.[0]?.id;
+
+            if (tmdbId && !blocklistTmdbIds.has(tmdbId)) {
+              logger.info('Removing exclusion from Sonarr (no longer blocklisted in Seerr)', {
+                label: 'Blocklist Sync Removals',
+                serverName: server.name,
+                title: exclusion.title,
+                tvdbId: exclusion.tvdbId,
+                tmdbId,
+                exclusionId: exclusion.id,
+              });
+
+              await sonarr.deleteImportExclusion(exclusion.id);
+              removedCount++;
+              stats.totalRemoved++;
+            }
+          } catch {
+            // Skip unresolvable exclusions — don't remove what we can't verify
+          }
+        }
+
+        logger.info('Completed exclusion removal sync for Sonarr server', {
+          label: 'Blocklist Sync Removals',
+          serverName: server.name,
+          removedCount,
+        });
+      } catch (error) {
+        logger.error('Error syncing exclusion removals from Sonarr', {
+          label: 'Blocklist Sync Removals',
+          serverName: server.name,
+          error: error.message,
+        });
+        stats.totalErrors++;
+      }
+    }
+
+    return stats;
+  }
+
   public async syncRadarrExclusionRemovals(): Promise<SyncStats> {
     logger.info('Syncing blocklist removals to Radarr', {
       label: 'Blocklist Sync Removals',
@@ -660,8 +1088,8 @@ class BlocklistSyncService {
       select: ['tmdbId', 'blocklistedTags'],
     });
 
-    const blocklistMap = new Map(
-      blocklistedMovies.map((item) => [item.tmdbId, item.blocklistedTags])
+    const blocklistTmdbIds = new Set(
+      blocklistedMovies.map((item) => item.tmdbId)
     );
 
     logger.info('Checking Radarr exclusions against Seerr blocklist', {
@@ -681,9 +1109,7 @@ class BlocklistSyncService {
         let removedCount = 0;
 
         for (const exclusion of exclusions) {
-          const blocklistEntry = blocklistMap.get(exclusion.tmdbId);
-
-          if (!blocklistEntry) {
+          if (!blocklistTmdbIds.has(exclusion.tmdbId)) {
             logger.info('Removing exclusion from Radarr (no longer blocklisted in Seerr)', {
               label: 'Blocklist Sync Removals',
               serverName: server.name,
