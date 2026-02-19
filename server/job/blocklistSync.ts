@@ -26,7 +26,15 @@ class BlocklistSyncJob implements RunnableScanner<StatusBase> {
         blocklistSyncService.syncAllSonarrServers(),
       ]);
 
-      await blocklistSyncService.syncSeerrToRadarr();
+      await Promise.all([
+        blocklistSyncService.syncSeerrToRadarr(),
+        blocklistSyncService.syncSeerrToSonarr(),
+      ]);
+
+      await Promise.all([
+        blocklistSyncService.syncRadarrExclusionRemovals(),
+        blocklistSyncService.syncSonarrExclusionRemovals(),
+      ]);
 
       await blocklistSyncService.enforceRadarrBlocklist();
 
