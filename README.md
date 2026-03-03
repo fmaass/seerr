@@ -13,6 +13,12 @@
 
 **Seerr** is a free and open source software application for managing requests for your media library. It integrates with the media server of your choice: [Jellyfin](https://jellyfin.org), [Plex](https://plex.tv), and [Emby](https://emby.media/). In addition, it integrates with your existing services, such as **[Sonarr](https://sonarr.tv/)**, **[Radarr](https://radarr.video/)**.
 
+> **Homelab fork:** This is a custom fork with bidirectional Radarr/Sonarr blocklist sync
+> and library enforcement. Before making changes to blocklist-related code, read the
+> **[Blocklist Pipeline Architecture](../portainer-stacks/BLOCKLIST_ARCHITECTURE.md)** document
+> in the portainer-stacks repo — it covers the full cross-project pipeline between Seerr,
+> ListSync, Radarr, and Sonarr.
+
 ## Current Features
 
 - Full Jellyfin/Emby/Plex integration including authentication with user import & management.
