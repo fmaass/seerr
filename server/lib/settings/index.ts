@@ -156,6 +156,7 @@ export interface MainSettings {
   blocklistLanguage: string;
   blocklistedTags: string;
   blocklistedTagsLimit: number;
+  blockDocumentaryGenre: boolean;
   mediaServerType: number;
   partialRequestsEnabled: boolean;
   enableSpecialEpisodes: boolean;
@@ -438,6 +439,7 @@ class Settings {
         blocklistLanguage: '',
         blocklistedTags: '',
         blocklistedTagsLimit: 50,
+        blockDocumentaryGenre: true,
         mediaServerType: MediaServerType.NOT_CONFIGURED,
         partialRequestsEnabled: true,
         enableSpecialEpisodes: false,
