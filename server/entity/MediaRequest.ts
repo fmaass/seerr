@@ -204,6 +204,44 @@ export class MediaRequest {
       }
     }
 
+    // Genre-based blocking (e.g. documentaries)
+    if (settings.main.blockDocumentaryGenre) {
+      const DOCUMENTARY_GENRE_ID = 99;
+      const genres = (tmdbMedia as any).genres ?? [];
+      const isDocumentary = genres.some(
+        (g: { id: number }) => g.id === DOCUMENTARY_GENRE_ID
+      );
+
+      if (isDocumentary) {
+        const canOverride = hasPermission(
+          Permission.MANAGE_BLOCKLIST,
+          user.permissions
+        );
+
+        if (!canOverride) {
+          const mediaTitle =
+            requestBody.mediaType === MediaType.MOVIE
+              ? (tmdbMedia as TmdbMovieDetails).title
+              : (tmdbMedia as any).name;
+
+          logger.warn(
+            'Request for media blocked due to documentary genre filter',
+            {
+              tmdbId: requestBody.mediaId,
+              mediaType: requestBody.mediaType,
+              mediaTitle,
+              genres: genres.map((g: { name: string }) => g.name),
+              label: 'Media Request',
+            }
+          );
+
+          throw new BlocklistedMediaError(
+            'Documentaries are blocked and cannot be requested.'
+          );
+        }
+      }
+    }
+
     let media = await mediaRepository.findOne({
       where: {
         tmdbId: requestBody.mediaId,
