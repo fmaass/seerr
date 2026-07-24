@@ -2,6 +2,7 @@ import Badge from '@app/components/Common/Badge';
 import Button from '@app/components/Common/Button';
 import ConfirmButton from '@app/components/Common/ConfirmButton';
 import Modal from '@app/components/Common/Modal';
+import useToasts from '@app/hooks/useToasts';
 import { Permission, useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
@@ -10,7 +11,6 @@ import type { MediaRequest } from '@server/entity/MediaRequest';
 import axios from 'axios';
 import { useState } from 'react';
 import { useIntl } from 'react-intl';
-import { useToasts } from 'react-toast-notifications';
 
 const messages = defineMessages('components.AutoDeleteBlock', {
   autodelete: 'Auto-Delete',
@@ -49,7 +49,9 @@ const AutoDeleteBlock = ({ request, onUpdate }: AutoDeleteBlockProps) => {
   const [showSetModal, setShowSetModal] = useState(false);
   const [selectedDays, setSelectedDays] = useState<number>(90);
 
-  const hasAutoDelete = !!(request.autoDeleteDays && request.autoDeleteDays > 0);
+  const hasAutoDelete = !!(
+    request.autoDeleteDays && request.autoDeleteDays > 0
+  );
   const mediaAddedAt = request.media?.mediaAddedAt
     ? new Date(request.media.mediaAddedAt)
     : null;
@@ -88,7 +90,7 @@ const AutoDeleteBlock = ({ request, onUpdate }: AutoDeleteBlockProps) => {
         autoDismiss: true,
       });
       onUpdate?.();
-    } catch (error) {
+    } catch {
       addToast(intl.formatMessage(messages.error), {
         appearance: 'error',
         autoDismiss: true,
@@ -110,7 +112,7 @@ const AutoDeleteBlock = ({ request, onUpdate }: AutoDeleteBlockProps) => {
       });
       setShowSetModal(false);
       onUpdate?.();
-    } catch (error) {
+    } catch {
       addToast(intl.formatMessage(messages.error), {
         appearance: 'error',
         autoDismiss: true,
@@ -188,9 +190,11 @@ const AutoDeleteBlock = ({ request, onUpdate }: AutoDeleteBlockProps) => {
                   {intl.formatMessage(messages.waitingforavailability)}
                 </span>
                 <span className="ml-1 text-yellow-500">
-                  ({intl.formatMessage(messages.daysafteravailability, {
+                  (
+                  {intl.formatMessage(messages.daysafteravailability, {
                     days: request.autoDeleteDays ?? 0,
-                  })})
+                  })}
+                  )
                 </span>
               </div>
             )}
@@ -254,8 +258,11 @@ const AutoDeleteBlock = ({ request, onUpdate }: AutoDeleteBlockProps) => {
                 >
                   {AUTO_DELETE_DAY_OPTIONS.map((days) => (
                     <option key={days} value={days}>
-                      {days} {intl.formatMessage(
-                        days === 1 ? { id: 'day', defaultMessage: 'day' } : { id: 'days', defaultMessage: 'days' }
+                      {days}{' '}
+                      {intl.formatMessage(
+                        days === 1
+                          ? { id: 'day', defaultMessage: 'day' }
+                          : { id: 'days', defaultMessage: 'days' }
                       )}
                     </option>
                   ))}
