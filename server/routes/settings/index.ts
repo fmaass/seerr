@@ -13,7 +13,6 @@ import type {
   LogsResultsResponse,
   SettingsAboutResponse,
 } from '@server/interfaces/api/settingsInterfaces';
-import blocklistSyncJob from '@server/job/blocklistSync';
 import { scheduledJobs } from '@server/job/schedule';
 import type { AvailableCacheIds } from '@server/lib/cache';
 import cacheManager from '@server/lib/cache';
@@ -78,8 +77,37 @@ settingsRoutes.get('/main', (req, res, next) => {
 
 settingsRoutes.post('/main', async (req, res) => {
   const settings = getSettings();
+  const replacesDocumentaryExemptUserIds = Object.prototype.hasOwnProperty.call(
+    req.body,
+    'documentaryExemptUserIds'
+  );
+  const submittedDocumentaryExemptUserIds =
+    replacesDocumentaryExemptUserIds &&
+    Array.isArray(req.body.documentaryExemptUserIds)
+      ? req.body.documentaryExemptUserIds
+      : [];
+  const documentaryExemptUserIds = submittedDocumentaryExemptUserIds
+    .map(Number)
+    .filter(Number.isInteger);
+
+  if (
+    replacesDocumentaryExemptUserIds &&
+    documentaryExemptUserIds.length !== submittedDocumentaryExemptUserIds.length
+  ) {
+    logger.warn('Dropped invalid documentary exemption user IDs', {
+      invalidUserIds: submittedDocumentaryExemptUserIds.filter(
+        (userId: unknown) => !Number.isInteger(Number(userId))
+      ),
+      label: 'Settings',
+    });
+  }
 
   settings.main = merge(settings.main, req.body);
+
+  if (replacesDocumentaryExemptUserIds) {
+    settings.main.documentaryExemptUserIds = documentaryExemptUserIds;
+  }
+
   await settings.save();
 
   return res.status(200).json(settings.main);

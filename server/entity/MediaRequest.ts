@@ -14,7 +14,7 @@ import { Blocklist } from '@server/entity/Blocklist';
 import OverrideRule from '@server/entity/OverrideRule';
 import type { MediaRequestBody } from '@server/interfaces/api/requestInterfaces';
 import notificationManager, { Notification } from '@server/lib/notifications';
-import { hasPermission, Permission } from '@server/lib/permissions';
+import { Permission, hasPermission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { DbAwareColumn, resolveDbType } from '@server/utils/DbColumnHelper';
@@ -152,16 +152,19 @@ export class MediaRequest {
             ? (tmdbMedia as TmdbMovieDetails).title
             : (tmdbMedia as any).name;
 
-        logger.info('Admin override: removing blocklisted media to fulfil request', {
-          tmdbId: requestBody.mediaId,
-          mediaType: requestBody.mediaType,
-          mediaTitle,
-          userId: user.id,
-          source: seerrBlocklisted.blocklistedTags
-            ? seerrBlocklisted.blocklistedTags.split('-')[0]
-            : 'manual',
-          label: 'Media Request',
-        });
+        logger.info(
+          'Admin override: removing blocklisted media to fulfil request',
+          {
+            tmdbId: requestBody.mediaId,
+            mediaType: requestBody.mediaType,
+            mediaTitle,
+            userId: user.id,
+            source: seerrBlocklisted.blocklistedTags
+              ? seerrBlocklisted.blocklistedTags.split('-')[0]
+              : 'manual',
+            label: 'Media Request',
+          }
+        );
 
         await blocklistRepository.remove(seerrBlocklisted);
 
@@ -179,7 +182,9 @@ export class MediaRequest {
           if (seerrBlocklisted.blocklistedTags.startsWith('radarr-sync-')) {
             sourceMessage =
               'This movie is blocklisted in Radarr and cannot be requested.';
-          } else if (seerrBlocklisted.blocklistedTags.startsWith('sonarr-sync-')) {
+          } else if (
+            seerrBlocklisted.blocklistedTags.startsWith('sonarr-sync-')
+          ) {
             sourceMessage =
               'This series is blocklisted in Sonarr and cannot be requested.';
           }
@@ -214,31 +219,47 @@ export class MediaRequest {
       );
 
       if (isDocumentary) {
-        const canOverride = hasPermission(
-          Permission.MANAGE_BLOCKLIST,
-          user.permissions
+        const ownerIsExempt = settings.main.documentaryExemptUserIds.includes(
+          requestUser.id
         );
 
-        if (!canOverride) {
-          const mediaTitle =
-            requestBody.mediaType === MediaType.MOVIE
-              ? (tmdbMedia as TmdbMovieDetails).title
-              : (tmdbMedia as any).name;
-
-          logger.warn(
-            'Request for media blocked due to documentary genre filter',
+        if (ownerIsExempt) {
+          logger.info(
+            'Documentary genre filter bypassed for exempt request owner',
             {
               tmdbId: requestBody.mediaId,
               mediaType: requestBody.mediaType,
-              mediaTitle,
-              genres: genres.map((g: { name: string }) => g.name),
+              ownerId: requestUser.id,
               label: 'Media Request',
             }
           );
-
-          throw new BlocklistedMediaError(
-            'Documentaries are blocked and cannot be requested.'
+        } else {
+          const canOverride = hasPermission(
+            Permission.MANAGE_BLOCKLIST,
+            user.permissions
           );
+
+          if (!canOverride) {
+            const mediaTitle =
+              requestBody.mediaType === MediaType.MOVIE
+                ? (tmdbMedia as TmdbMovieDetails).title
+                : (tmdbMedia as any).name;
+
+            logger.warn(
+              'Request for media blocked due to documentary genre filter',
+              {
+                tmdbId: requestBody.mediaId,
+                mediaType: requestBody.mediaType,
+                mediaTitle,
+                genres: genres.map((g: { name: string }) => g.name),
+                label: 'Media Request',
+              }
+            );
+
+            throw new BlocklistedMediaError(
+              'Documentaries are blocked and cannot be requested.'
+            );
+          }
         }
       }
     }
@@ -267,12 +288,15 @@ export class MediaRequest {
         );
 
         if (canOverride) {
-          logger.info('Admin override: resetting BLOCKLISTED media status to fulfil request', {
-            tmdbId: tmdbMedia.id,
-            mediaType: requestBody.mediaType,
-            userId: user.id,
-            label: 'Media Request',
-          });
+          logger.info(
+            'Admin override: resetting BLOCKLISTED media status to fulfil request',
+            {
+              tmdbId: tmdbMedia.id,
+              mediaType: requestBody.mediaType,
+              userId: user.id,
+              label: 'Media Request',
+            }
+          );
           media.status = MediaStatus.PENDING;
           media.status4k = MediaStatus.UNKNOWN;
         } else {
