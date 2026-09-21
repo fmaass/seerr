@@ -100,8 +100,18 @@ class RadarrScanner
 
           await this.loop(this.processRadarrMovie.bind(this), { sessionId });
 
-          // Detect movies that were in Radarr but are now missing
-          await this.detectMissingMovies(server, sessionId);
+          // Detect movies that were in Radarr but are now missing.
+          // An empty response is not evidence of removal (the server may be
+          // down or misconfigured), so skip the pass entirely — same safeguard
+          // upstream applies to cleanupOrphanedMovies via serverReturnedEmpty.
+          if (this.items.length > 0) {
+            await this.detectMissingMovies(server, sessionId);
+          } else {
+            this.log(
+              `Skipping missing-movie detection for Radarr server ${server.name}: it returned no movies.`,
+              'info'
+            );
+          }
         } else {
           this.log(`Sync not enabled. Skipping Radarr server: ${server.name}`);
         }
@@ -282,6 +292,8 @@ class RadarrScanner
           mediaType: MediaType.MOVIE,
           serviceId: server.id,
         },
+        // Required by declineOrphanedRequests below, which throws without it.
+        relations: { requests: true },
       });
 
       const radarrTmdbIds = new Set(this.items.map((m) => m.tmdbId));
@@ -299,11 +311,22 @@ class RadarrScanner
             oldStatus: media.status,
           });
 
+          const wasProcessing = media.status === MediaStatus.PROCESSING;
+
           media.status = MediaStatus.UNKNOWN;
           media.serviceId = null;
           media.externalServiceId = null;
           media.externalServiceSlug = null;
           await mediaRepository.save(media);
+
+          // Orphaned before completion: decline the approved request so the
+          // duplicate-request guard releases and the user can re-request.
+          // A previously AVAILABLE movie keeps its request (the fork's
+          // auto-delete job owns that lifecycle).
+          if (wasProcessing) {
+            await this.declineOrphanedRequests(media, false);
+          }
+
           updatedCount++;
         }
       }
