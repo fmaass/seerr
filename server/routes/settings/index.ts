@@ -78,13 +78,13 @@ settingsRoutes.get('/main', (req, res, next) => {
 settingsRoutes.post('/main', async (req, res) => {
   const settings = getSettings();
   const replacesDocumentaryExemptUserIds = Object.prototype.hasOwnProperty.call(
-    req.body,
+    req.body ?? {},
     'documentaryExemptUserIds'
   );
   const submittedDocumentaryExemptUserIds =
     replacesDocumentaryExemptUserIds &&
-    Array.isArray(req.body.documentaryExemptUserIds)
-      ? req.body.documentaryExemptUserIds
+    Array.isArray(req.body?.documentaryExemptUserIds)
+      ? req.body?.documentaryExemptUserIds
       : [];
   const documentaryExemptUserIds = submittedDocumentaryExemptUserIds
     .map(Number)

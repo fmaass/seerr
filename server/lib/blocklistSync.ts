@@ -856,7 +856,7 @@ class BlocklistSyncService {
               });
               addedCount++;
               stats.totalAdded++;
-            } catch (error) {
+            } catch {
               stats.totalErrors++;
             }
           }
@@ -866,7 +866,7 @@ class BlocklistSyncService {
           serverName: server.name,
           addedCount,
         });
-      } catch (error) {
+      } catch {
         stats.totalErrors++;
       }
     }
@@ -937,7 +937,7 @@ class BlocklistSyncService {
               addedCount++;
               stats.totalAdded++;
             }
-          } catch (error) {
+          } catch {
             stats.totalErrors++;
           }
         }
@@ -947,7 +947,7 @@ class BlocklistSyncService {
           serverName: server.name,
           addedCount,
         });
-      } catch (error) {
+      } catch {
         stats.totalErrors++;
       }
     }

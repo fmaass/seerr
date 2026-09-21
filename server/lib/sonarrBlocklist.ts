@@ -1,5 +1,5 @@
 import SonarrAPI from '@server/api/servarr/sonarr';
-import { getSettings, type SonarrSettings } from '@server/lib/settings';
+import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { uniqWith } from 'lodash';
 

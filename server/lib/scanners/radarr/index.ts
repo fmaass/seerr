@@ -105,7 +105,7 @@ class RadarrScanner
           // down or misconfigured), so skip the pass entirely — same safeguard
           // upstream applies to cleanupOrphanedMovies via serverReturnedEmpty.
           if (this.items.length > 0) {
-            await this.detectMissingMovies(server, sessionId);
+            await this.detectMissingMovies(server);
           } else {
             this.log(
               `Skipping missing-movie detection for Radarr server ${server.name}: it returned no movies.`,
@@ -233,8 +233,7 @@ class RadarrScanner
   }
 
   private async detectMissingMovies(
-    server: RadarrSettings,
-    sessionId: string
+    server: RadarrSettings
   ): Promise<void> {
     try {
       const { getRepository } = await import('@server/datasource');
