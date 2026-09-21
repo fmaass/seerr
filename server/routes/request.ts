@@ -32,6 +32,7 @@ import requestLock, {
   userKey,
 } from '@server/utils/requestLock';
 import { Router } from 'express';
+import { EntityNotFoundError } from 'typeorm';
 import autoDeleteRoutes from './request/autoDelete';
 
 const requestRoutes = Router();
@@ -774,9 +775,18 @@ requestRoutes.post<{
     } catch (e) {
       logger.error('Error processing request retry', {
         label: 'Media Request',
-        message: e.message,
+        requestId: Number(req.params.requestId),
+        errorMessage: e.message,
       });
-      next({ status: 404, message: 'Request not found.' });
+
+      if (e instanceof EntityNotFoundError) {
+        return next({ status: 404, message: 'Request not found.' });
+      }
+
+      next({
+        status: 500,
+        message: 'Something went wrong updating the request.',
+      });
     }
   }
 );
@@ -801,11 +811,13 @@ requestRoutes.post<{
         let newStatus: MediaRequestStatus;
 
         switch (req.params.status) {
-          case 'approve':
+          case 'approve': {
             newStatus = MediaRequestStatus.APPROVED;
 
             // Handle auto-delete if specified (countdown starts when media is available)
-            const autoDeleteDays = Number(req.body.autoDeleteDays || req.body.autoDeleteAfterDays || 0);
+            const autoDeleteDays = Number(
+              req.body?.autoDeleteDays || req.body?.autoDeleteAfterDays || 0
+            );
             if (autoDeleteDays > 0) {
               request.autoDeleteDays = autoDeleteDays;
 
@@ -817,6 +829,7 @@ requestRoutes.post<{
             }
 
             break;
+          }
           case 'decline':
             newStatus = MediaRequestStatus.DECLINED;
             break;
@@ -843,9 +856,18 @@ requestRoutes.post<{
     } catch (e) {
       logger.error('Error processing request update', {
         label: 'Media Request',
-        message: e.message,
+        requestId: Number(req.params.requestId),
+        errorMessage: e.message,
       });
-      next({ status: 404, message: 'Request not found.' });
+
+      if (e instanceof EntityNotFoundError) {
+        return next({ status: 404, message: 'Request not found.' });
+      }
+
+      next({
+        status: 500,
+        message: 'Something went wrong updating the request.',
+      });
     }
   }
 );

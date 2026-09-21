@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { getRepository } from '@server/datasource';
 import { Blocklist } from '@server/entity/Blocklist';
 import RadarrAPI from '@server/api/servarr/radarr';
-import SonarrAPI from '@server/api/servarr/sonarr';
 import { MediaType } from '@server/constants/media';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
@@ -137,14 +136,6 @@ blocklistRoutes.get(
           });
         }
       }
-
-      const sonarrServers = uniqWith(
-        settings.sonarr.filter((server) => server.syncEnabled !== false),
-        (a, b) =>
-          a.hostname === b.hostname &&
-          a.port === b.port &&
-          a.baseUrl === b.baseUrl
-      );
 
       const blocklistedShows = await blocklistRepository.find({
         where: { mediaType: MediaType.TV },

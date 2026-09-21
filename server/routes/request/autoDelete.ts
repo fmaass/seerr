@@ -20,7 +20,7 @@ autoDeleteRoutes.post(
         relations: ['media'],
       });
 
-      const days = Number(req.body.days);
+      const days = Number(req.body?.days);
 
       if (days > 0) {
         request.autoDeleteDays = days;
@@ -85,7 +85,7 @@ autoDeleteRoutes.get(
         daysRemaining,
         countdownStarted: !!request.media?.mediaAddedAt,
       });
-    } catch (e) {
+    } catch {
       next({ status: 404, message: 'Request not found.' });
     }
   }
