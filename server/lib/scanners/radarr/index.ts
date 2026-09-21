@@ -55,6 +55,13 @@ class RadarrScanner
     this.serverReturnedEmpty = false;
     this.server4kReturnedEmpty = false;
 
+    // Servers whose missing-movie pass is deferred until the whole scan is
+    // done, with the tmdb ids that server returned.
+    const missingCandidates: {
+      server: RadarrSettings;
+      tmdbIds: Set<number>;
+    }[] = [];
+
     try {
       this.servers = uniqWith(settings.radarr, (radarrA, radarrB) => {
         return (
@@ -100,12 +107,16 @@ class RadarrScanner
 
           await this.loop(this.processRadarrMovie.bind(this), { sessionId });
 
-          // Detect movies that were in Radarr but are now missing.
+          // Record this server's tmdb ids for the missing-movie pass, which
+          // only runs once every server has been scanned (see below).
           // An empty response is not evidence of removal (the server may be
           // down or misconfigured), so skip the pass entirely — same safeguard
           // upstream applies to cleanupOrphanedMovies via serverReturnedEmpty.
           if (this.items.length > 0) {
-            await this.detectMissingMovies(server);
+            missingCandidates.push({
+              server,
+              tmdbIds: new Set(this.items.map((movie) => movie.tmdbId)),
+            });
           } else {
             this.log(
               `Skipping missing-movie detection for Radarr server ${server.name}: it returned no movies.`,
@@ -140,6 +151,16 @@ class RadarrScanner
       }
       if (this.server4kReturnedEmpty) {
         this.didScan4k = false;
+      }
+
+      // Run the missing-movie pass only now that every server has been
+      // scanned: a server that has picked the movie up re-points `serviceId`
+      // to itself during its own scan, so a media still pointing at a server
+      // that no longer lists it is missing from every server only once all
+      // servers are done. Running it inside the loop would reset — and
+      // decline the request of — a movie that simply moved to a later server.
+      for (const candidate of missingCandidates) {
+        await this.detectMissingMovies(candidate.server, candidate.tmdbIds);
       }
 
       await this.cleanupOrphanedMovies();
@@ -233,7 +254,8 @@ class RadarrScanner
   }
 
   private async detectMissingMovies(
-    server: RadarrSettings
+    server: RadarrSettings,
+    radarrTmdbIds: Set<number>
   ): Promise<void> {
     try {
       const { getRepository } = await import('@server/datasource');
@@ -254,7 +276,8 @@ class RadarrScanner
         relations: { requests: true },
       });
 
-      const radarrTmdbIds = new Set(this.items.map((m) => m.tmdbId));
+      // The set is passed in: by the time this runs, `this.items` holds only
+      // the LAST scanned server's list, not this server's.
       let updatedCount = 0;
 
       for (const media of mediaInSeerr) {
