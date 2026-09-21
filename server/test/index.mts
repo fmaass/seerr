@@ -87,6 +87,16 @@ const stream = run({
   testNamePatterns: opts.testNamePattern,
 });
 
+// The stream only feeds reporters, so a red suite would otherwise exit 0 and hide
+// itself from CI. `test:summary` is the only event that reflects the whole run's
+// verdict: `test:fail` also fires for `{ todo: true }` tests, which are not failures.
+stream.on('test:summary', (summary) => {
+  if (!summary.success) {
+    // Not process.exit(): the reporters still need to flush their output.
+    process.exitCode = 1;
+  }
+});
+
 // In CI, write a JUnit report to a file for use by GitHub
 if (process.env.CI) {
   const reportStream = createWriteStream(join(BASE_DIR, 'report.xml'));
