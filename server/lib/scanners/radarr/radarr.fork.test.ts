@@ -229,4 +229,116 @@ describe('Radarr Scanner (fork: missing-movie pass)', () => {
     assert.strictEqual(updatedMedia.serviceId, 0);
     assert.strictEqual(updatedRequest.status, MediaRequestStatus.APPROVED);
   });
+
+  it('T5: keeps the approved request when a movie has moved to a later Radarr server', async () => {
+    const mediaRepository = getRepository(Media);
+    const requestRepository = getRepository(MediaRequest);
+    const userRepository = getRepository(User);
+
+    const requestedBy = await userRepository.findOneOrFail({
+      where: { id: 1 },
+    });
+
+    const media = await mediaRepository.save(
+      new Media({
+        tmdbId: 9005,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 42,
+      })
+    );
+
+    const settings = getSettings();
+    settings.radarr = [];
+    settings.sonarr = [];
+    const request = await requestRepository.save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.APPROVED,
+        media,
+        requestedBy,
+        is4k: false,
+      })
+    );
+
+    // Distinct ports: run() de-duplicates servers by hostname/port/baseUrl.
+    configureRadarr([{ port: 7878 }, { port: 7879 }]);
+    // The scan loop is sequential, so a call counter yields a per-server
+    // response: server 0 no longer lists the movie, server 1 now does.
+    const responses = [
+      [fakeRadarrMovie({ tmdbId: 9105 })],
+      [fakeRadarrMovie({ tmdbId: 9005, hasFile: false, monitored: true })],
+    ];
+    let call = 0;
+    getMoviesImpl = async () => responses[call++] ?? [];
+
+    await radarrScanner.run();
+
+    const updatedMedia = await mediaRepository.findOneOrFail({
+      where: { tmdbId: 9005 },
+    });
+    const updatedRequest = await requestRepository.findOneOrFail({
+      where: { id: request.id },
+    });
+
+    assert.strictEqual(updatedMedia.status, MediaStatus.PROCESSING);
+    assert.strictEqual(updatedMedia.serviceId, 1);
+    assert.strictEqual(updatedRequest.status, MediaRequestStatus.APPROVED);
+  });
+
+  it('T6: still declines when the movie is missing from every Radarr server', async () => {
+    const mediaRepository = getRepository(Media);
+    const requestRepository = getRepository(MediaRequest);
+    const userRepository = getRepository(User);
+
+    const requestedBy = await userRepository.findOneOrFail({
+      where: { id: 1 },
+    });
+
+    const media = await mediaRepository.save(
+      new Media({
+        tmdbId: 9006,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 42,
+      })
+    );
+
+    const settings = getSettings();
+    settings.radarr = [];
+    settings.sonarr = [];
+    const request = await requestRepository.save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.APPROVED,
+        media,
+        requestedBy,
+        is4k: false,
+      })
+    );
+
+    // Distinct ports: run() de-duplicates servers by hostname/port/baseUrl.
+    configureRadarr([{ port: 7878 }, { port: 7879 }]);
+    const responses = [
+      [fakeRadarrMovie({ tmdbId: 9106 })],
+      [fakeRadarrMovie({ tmdbId: 9206 })],
+    ];
+    let call = 0;
+    getMoviesImpl = async () => responses[call++] ?? [];
+
+    await radarrScanner.run();
+
+    const updatedMedia = await mediaRepository.findOneOrFail({
+      where: { tmdbId: 9006 },
+    });
+    const updatedRequest = await requestRepository.findOneOrFail({
+      where: { id: request.id },
+    });
+
+    assert.strictEqual(updatedMedia.status, MediaStatus.UNKNOWN);
+    assert.strictEqual(updatedMedia.serviceId, null);
+    assert.strictEqual(updatedRequest.status, MediaRequestStatus.DECLINED);
+  });
 });
