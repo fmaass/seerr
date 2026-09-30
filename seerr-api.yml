@@ -6778,9 +6778,11 @@ paths:
     post:
       summary: Set auto-delete for a request
       description: |
-        Sets or cancels auto-delete for a media request. Media will be automatically deleted from Radarr/Sonarr after the specified number of days.
+        Sets or cancels auto-delete for a media request. Media will be automatically deleted from Radarr/Sonarr once the specified number of days have passed since it was added. Works on approved and completed requests.
 
-        Requires the `MANAGE_REQUESTS` permission or `ADMIN`.
+        Optionally reassigns the request to another user (`userId`) in the same write.
+
+        Requires the `MANAGE_REQUESTS` permission or `ADMIN`; reassigning with `userId` also requires `MANAGE_USERS`.
       tags:
         - request
       parameters:
@@ -6802,6 +6804,10 @@ paths:
                   type: number
                   description: Days until auto-delete (0 or null to cancel)
                   example: 90
+                userId:
+                  type: number
+                  description: ID of the user to reassign the request to. Requires `MANAGE_USERS` in addition to `MANAGE_REQUESTS`.
+                  example: 2
       responses:
         '200':
           description: Auto-delete updated
@@ -6809,6 +6815,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MediaRequest'
+        '400':
+          description: Invalid `userId`, or no user with that ID exists
+        '403':
+          description: '`userId` given without the `MANAGE_USERS` permission'
+        '404':
+          description: Request not found
     get:
       summary: Get auto-delete info for a request
       description: |
