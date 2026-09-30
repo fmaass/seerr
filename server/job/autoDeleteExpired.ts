@@ -1,12 +1,91 @@
 import RadarrAPI from '@server/api/servarr/radarr';
 import SonarrAPI from '@server/api/servarr/sonarr';
-import { MediaRequestStatus, MediaStatus, MediaType } from '@server/constants/media';
-import { getRepository } from '@server/datasource';
+import {
+  MediaRequestStatus,
+  MediaStatus,
+  MediaType,
+} from '@server/constants/media';
+import dataSource, { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
-import type { RunnableScanner, StatusBase } from '@server/lib/scanners/baseScanner';
+import type {
+  RunnableScanner,
+  StatusBase,
+} from '@server/lib/scanners/baseScanner';
+import type { DVRSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
+import { Brackets } from 'typeorm';
+
+// Bot-made requests carry no serverId, so fall back to the server the media
+// was found on, then to the default server for the same resolution.
+function resolveServer<T extends DVRSettings>(
+  servers: T[],
+  request: MediaRequest
+): T | undefined {
+  const byId = (id: number | null | undefined) =>
+    id === null || id === undefined
+      ? undefined
+      : servers.find(
+          (server) => server.id === id && server.is4k === request.is4k
+        );
+
+  return (
+    byId(request.serverId) ??
+    byId(request.is4k ? request.media.serviceId4k : request.media.serviceId) ??
+    servers.find((server) => server.isDefault && server.is4k === request.is4k)
+  );
+}
+
+// Listeners stay off for both writes: a save() would let the request
+// subscriber send an APPROVED request straight back to the arr, or announce
+// a COMPLETED one as available again. The request is left COMPLETED so the
+// duplicate guard admits a fresh request for the same media.
+async function resetAfterDelete(request: MediaRequest): Promise<void> {
+  const mediaReset = request.is4k
+    ? {
+        status4k: MediaStatus.UNKNOWN,
+        serviceId4k: null,
+        externalServiceId4k: null,
+        externalServiceSlug4k: null,
+      }
+    : {
+        status: MediaStatus.UNKNOWN,
+        serviceId: null,
+        externalServiceId: null,
+        externalServiceSlug: null,
+      };
+
+  await dataSource.transaction(async (manager) => {
+    await manager
+      .createQueryBuilder()
+      .update(Media)
+      .set({ ...mediaReset, mediaAddedAt: () => 'NULL' })
+      .where('id = :id', { id: request.media.id })
+      .callListeners(false)
+      .execute();
+
+    await manager
+      .createQueryBuilder()
+      .update(MediaRequest)
+      .set({
+        status: MediaRequestStatus.COMPLETED,
+        autoDeleteDays: null,
+        autoDeleteDate: () => 'NULL',
+      })
+      .where('id = :id', { id: request.id })
+      .callListeners(false)
+      .execute();
+  });
+
+  logger.info('Reset media status after auto-delete', {
+    label: 'Auto-Delete Job',
+    requestId: request.id,
+    tmdbId: request.media.tmdbId,
+    is4k: request.is4k,
+    newStatus: 'UNKNOWN',
+  });
+}
 
 class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
   private running = false;
@@ -33,12 +112,20 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
         .createQueryBuilder('request')
         .leftJoinAndSelect('request.media', 'media')
         .leftJoinAndSelect('request.requestedBy', 'requestedBy')
-        .where('request.status = :status', {
-          status: MediaRequestStatus.APPROVED,
+        .where('request.status IN (:...statuses)', {
+          statuses: [MediaRequestStatus.APPROVED, MediaRequestStatus.COMPLETED],
         })
         .andWhere('request.autoDeleteDays IS NOT NULL')
         .andWhere('request.autoDeleteDays > 0')
         .andWhere('media.mediaAddedAt IS NOT NULL')
+        .andWhere(
+          new Brackets((qb) => {
+            qb.where(
+              '(request.is4k = :standard AND media.status = :available)'
+            ).orWhere('(request.is4k = :uhd AND media.status4k = :available)');
+          }),
+          { standard: false, uhd: true, available: MediaStatus.AVAILABLE }
+        )
         .getMany();
 
       if (candidates.length === 0) {
@@ -58,10 +145,13 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
       });
 
       if (expiredRequests.length === 0) {
-        logger.info('No expired media requests found (all still within retention period)', {
-          label: 'Auto-Delete Job',
-          candidatesChecked: candidates.length,
-        });
+        logger.info(
+          'No expired media requests found (all still within retention period)',
+          {
+            label: 'Auto-Delete Job',
+            candidatesChecked: candidates.length,
+          }
+        );
         this.running = false;
         return;
       }
@@ -79,7 +169,9 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
         try {
           const addedAt = new Date(request.media.mediaAddedAt);
           const expiresAt = new Date(addedAt);
-          expiresAt.setDate(expiresAt.getDate() + (request.autoDeleteDays ?? 0));
+          expiresAt.setDate(
+            expiresAt.getDate() + (request.autoDeleteDays ?? 0)
+          );
 
           logger.info('Processing expired media request', {
             label: 'Auto-Delete Job',
@@ -93,16 +185,14 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
           });
 
           if (request.type === MediaType.MOVIE) {
-            const radarrServer = settings.radarr.find(
-              (server) =>
-                server.id === request.serverId && server.is4k === request.is4k
-            );
+            const radarrServer = resolveServer(settings.radarr, request);
 
             if (!radarrServer) {
               logger.warn('Radarr server not found for expired request', {
                 label: 'Auto-Delete Job',
                 requestId: request.id,
                 serverId: request.serverId,
+                is4k: request.is4k,
               });
               continue;
             }
@@ -135,7 +225,10 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
 
               deletedCount++;
             } catch (error) {
-              if (error.message?.includes('404') || error.message?.includes('not found')) {
+              if (
+                error.message?.includes('404') ||
+                error.message?.includes('not found')
+              ) {
                 logger.info('Movie already removed from Radarr', {
                   label: 'Auto-Delete Job',
                   requestId: request.id,
@@ -147,34 +240,16 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
               }
             }
 
-            const mediaRepository = getRepository(Media);
-            const media = await mediaRepository.findOne({
-              where: { id: request.media.id },
-            });
-            if (media) {
-              media.status = MediaStatus.UNKNOWN;
-              media.serviceId = null;
-              media.externalServiceId = null;
-              media.externalServiceSlug = null;
-              await mediaRepository.save(media);
-
-              logger.info('Reset media status after auto-delete', {
-                label: 'Auto-Delete Job',
-                tmdbId: request.media.tmdbId,
-                newStatus: 'UNKNOWN',
-              });
-            }
+            await resetAfterDelete(request);
           } else if (request.type === MediaType.TV) {
-            const sonarrServer = settings.sonarr.find(
-              (server) =>
-                server.id === request.serverId && server.is4k === request.is4k
-            );
+            const sonarrServer = resolveServer(settings.sonarr, request);
 
             if (!sonarrServer) {
               logger.warn('Sonarr server not found for expired request', {
                 label: 'Auto-Delete Job',
                 requestId: request.id,
                 serverId: request.serverId,
+                is4k: request.is4k,
               });
               continue;
             }
@@ -216,7 +291,10 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
 
               deletedCount++;
             } catch (error) {
-              if (error.message?.includes('404') || error.message?.includes('not found')) {
+              if (
+                error.message?.includes('404') ||
+                error.message?.includes('not found')
+              ) {
                 logger.info('Series already removed from Sonarr', {
                   label: 'Auto-Delete Job',
                   requestId: request.id,
@@ -228,28 +306,8 @@ class AutoDeleteExpiredJob implements RunnableScanner<StatusBase> {
               }
             }
 
-            const mediaRepository = getRepository(Media);
-            const media = await mediaRepository.findOne({
-              where: { id: request.media.id },
-            });
-            if (media) {
-              media.status = MediaStatus.UNKNOWN;
-              media.serviceId = null;
-              media.externalServiceId = null;
-              media.externalServiceSlug = null;
-              await mediaRepository.save(media);
-
-              logger.info('Reset media status after auto-delete', {
-                label: 'Auto-Delete Job',
-                tmdbId: request.media.tmdbId,
-                newStatus: 'UNKNOWN',
-              });
-            }
+            await resetAfterDelete(request);
           }
-
-          request.autoDeleteDays = null;
-          request.autoDeleteDate = undefined;
-          await requestRepository.save(request);
         } catch (error) {
           logger.error('Error processing expired media request', {
             label: 'Auto-Delete Job',
