@@ -25,6 +25,23 @@ Object.defineProperty(RadarrAPI.prototype, 'getMovies', {
   configurable: true,
 });
 
+// The targeted per-server lookup the missing-movie pass must consult before
+// it resets a movie; the default models a movie absent from every server.
+let lookupCalls: number[] = [];
+let getLibraryMoviesByTmdbIdImpl: (
+  tmdbId: number
+) => Promise<RadarrMovie[]> = async () => [];
+Object.defineProperty(RadarrAPI.prototype, 'getLibraryMoviesByTmdbId', {
+  set() {},
+  get() {
+    return async (tmdbId: number) => {
+      lookupCalls.push(tmdbId);
+      return getLibraryMoviesByTmdbIdImpl(tmdbId);
+    };
+  },
+  configurable: true,
+});
+
 mock.method(MediaRequest, 'sendNotification', async () => undefined);
 
 setupTestDb();
@@ -76,6 +93,8 @@ function fakeRadarrMovie(overrides: Partial<RadarrMovie> = {}): RadarrMovie {
 describe('Radarr Scanner (fork: missing-movie pass)', () => {
   beforeEach(() => {
     getMoviesImpl = async () => [];
+    getLibraryMoviesByTmdbIdImpl = async () => [];
+    lookupCalls = [];
   });
 
   it('T1: keeps an AVAILABLE movie and its service ids when the server returns no movies', async () => {
@@ -339,6 +358,131 @@ describe('Radarr Scanner (fork: missing-movie pass)', () => {
 
     assert.strictEqual(updatedMedia.status, MediaStatus.UNKNOWN);
     assert.strictEqual(updatedMedia.serviceId, null);
+    assert.strictEqual(updatedRequest.status, MediaRequestStatus.DECLINED);
+  });
+
+  async function seedProcessingWithRequest(tmdbId: number) {
+    const mediaRepository = getRepository(Media);
+    const requestRepository = getRepository(MediaRequest);
+    const requestedBy = await getRepository(User).findOneOrFail({
+      where: { id: 1 },
+    });
+
+    const media = await mediaRepository.save(
+      new Media({
+        tmdbId,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.PROCESSING,
+        serviceId: 0,
+        externalServiceId: 42,
+      })
+    );
+
+    const settings = getSettings();
+    settings.radarr = [];
+    settings.sonarr = [];
+    const request = await requestRepository.save(
+      new MediaRequest({
+        type: MediaType.MOVIE,
+        status: MediaRequestStatus.APPROVED,
+        media,
+        requestedBy,
+        is4k: false,
+      })
+    );
+
+    return { media, request };
+  }
+
+  it('T7: keeps a movie the targeted lookup still finds although the bulk list omitted it', async () => {
+    const mediaRepository = getRepository(Media);
+    const requestRepository = getRepository(MediaRequest);
+    const { request } = await seedProcessingWithRequest(9007);
+    await mediaRepository.save(
+      new Media({
+        tmdbId: 9017,
+        mediaType: MediaType.MOVIE,
+        status: MediaStatus.AVAILABLE,
+        serviceId: 0,
+        externalServiceId: 43,
+      })
+    );
+
+    configureRadarr([{ syncEnabled: true }]);
+    getMoviesImpl = async () => [fakeRadarrMovie({ tmdbId: 9107 })];
+    getLibraryMoviesByTmdbIdImpl = async (tmdbId) => [
+      fakeRadarrMovie({ tmdbId }),
+    ];
+
+    await radarrScanner.run();
+
+    const processing = await mediaRepository.findOneOrFail({
+      where: { tmdbId: 9007 },
+    });
+    const available = await mediaRepository.findOneOrFail({
+      where: { tmdbId: 9017 },
+    });
+    const updatedRequest = await requestRepository.findOneOrFail({
+      where: { id: request.id },
+    });
+
+    assert.strictEqual(processing.status, MediaStatus.PROCESSING);
+    assert.strictEqual(processing.serviceId, 0);
+    assert.strictEqual(processing.externalServiceId, 42);
+    assert.strictEqual(available.status, MediaStatus.AVAILABLE);
+    assert.strictEqual(available.serviceId, 0);
+    assert.strictEqual(available.externalServiceId, 43);
+    assert.strictEqual(updatedRequest.status, MediaRequestStatus.APPROVED);
+  });
+
+  it('T8: keeps a movie whose targeted lookup fails', async () => {
+    const mediaRepository = getRepository(Media);
+    const requestRepository = getRepository(MediaRequest);
+    const { request } = await seedProcessingWithRequest(9008);
+
+    configureRadarr([{ syncEnabled: true }]);
+    getMoviesImpl = async () => [fakeRadarrMovie({ tmdbId: 9108 })];
+    getLibraryMoviesByTmdbIdImpl = async () => {
+      throw new Error('connect ECONNREFUSED');
+    };
+
+    await radarrScanner.run();
+
+    const updatedMedia = await mediaRepository.findOneOrFail({
+      where: { tmdbId: 9008 },
+    });
+    const updatedRequest = await requestRepository.findOneOrFail({
+      where: { id: request.id },
+    });
+
+    assert.strictEqual(updatedMedia.status, MediaStatus.PROCESSING);
+    assert.strictEqual(updatedMedia.serviceId, 0);
+    assert.strictEqual(updatedMedia.externalServiceId, 42);
+    assert.strictEqual(updatedRequest.status, MediaRequestStatus.APPROVED);
+  });
+
+  it('T9: resets and declines only after the targeted lookup confirms the movie is absent', async () => {
+    const mediaRepository = getRepository(Media);
+    const requestRepository = getRepository(MediaRequest);
+    const { request } = await seedProcessingWithRequest(9009);
+
+    configureRadarr([{ syncEnabled: true }]);
+    getMoviesImpl = async () => [fakeRadarrMovie({ tmdbId: 9109 })];
+    getLibraryMoviesByTmdbIdImpl = async () => [];
+
+    await radarrScanner.run();
+
+    const updatedMedia = await mediaRepository.findOneOrFail({
+      where: { tmdbId: 9009 },
+    });
+    const updatedRequest = await requestRepository.findOneOrFail({
+      where: { id: request.id },
+    });
+
+    assert.ok(lookupCalls.includes(9009));
+    assert.strictEqual(updatedMedia.status, MediaStatus.UNKNOWN);
+    assert.strictEqual(updatedMedia.serviceId, null);
+    assert.strictEqual(updatedMedia.externalServiceId, null);
     assert.strictEqual(updatedRequest.status, MediaRequestStatus.DECLINED);
   });
 });

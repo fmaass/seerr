@@ -328,6 +328,13 @@ class RadarrScanner
           (media.status === MediaStatus.AVAILABLE ||
             media.status === MediaStatus.PROCESSING)
         ) {
+          // The bulk list alone is not proof of removal: confirm with the
+          // same targeted per-server lookup upstream's orphan cleanup uses,
+          // which keeps the movie on a hit or on a failed lookup.
+          if (await this.existsInAnyServer(media.tmdbId, false)) {
+            continue;
+          }
+
           this.log('Detected missing movie, updating status', 'info', {
             tmdbId: media.tmdbId,
             oldStatus: media.status,
