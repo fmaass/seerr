@@ -21,6 +21,7 @@ import type {
   MediaRequestBody,
   RequestResultsResponse,
 } from '@server/interfaces/api/requestInterfaces';
+import { getAutoDeletePolicyDays } from '@server/lib/autoDeletePolicy';
 import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
@@ -825,6 +826,21 @@ requestRoutes.post<{
                 label: 'Media Request',
                 requestId: request.id,
                 autoDeleteDays,
+              });
+            }
+
+            const policyDays =
+              request.type === MediaType.MOVIE
+                ? getAutoDeletePolicyDays(request.requestedBy?.id)
+                : undefined;
+            if (policyDays !== undefined) {
+              request.autoDeleteDays = policyDays;
+
+              logger.info('Auto-delete policy applied to approved request', {
+                label: 'Media Request',
+                requestId: request.id,
+                userId: request.requestedBy.id,
+                days: policyDays,
               });
             }
 

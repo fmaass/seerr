@@ -8,6 +8,7 @@ import {
 import { getRepository } from '@server/datasource';
 import { Blocklist } from '@server/entity/Blocklist';
 import type { MediaRequestBody } from '@server/interfaces/api/requestInterfaces';
+import { getAutoDeletePolicyDays } from '@server/lib/autoDeletePolicy';
 import notificationManager, { Notification } from '@server/lib/notifications';
 import overrideRules from '@server/lib/overrideRules';
 import { Permission, hasPermission } from '@server/lib/permissions';
@@ -521,6 +522,18 @@ export class MediaRequest {
           label: 'Media Request',
           tmdbId: requestBody.mediaId,
           autoDeleteDays: requestBody.autoDeleteDays,
+        });
+      }
+
+      const policyDays = getAutoDeletePolicyDays(requestUser.id);
+      if (policyDays !== undefined) {
+        request.autoDeleteDays = policyDays;
+
+        logger.info('Auto-delete policy applied to movie request', {
+          label: 'Media Request',
+          tmdbId: requestBody.mediaId,
+          userId: requestUser.id,
+          days: policyDays,
         });
       }
 

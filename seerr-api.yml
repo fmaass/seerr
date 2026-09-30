@@ -256,6 +256,19 @@ components:
         versionCheck:
           type: boolean
           example: false
+        autoDeleteUserPolicies:
+          type: array
+          description: |
+            Per-user auto-delete policy for movie requests. A movie requested by (or reassigned to) a listed user gets `days` as its auto-delete value, overriding any value in the request, approval or auto-delete call. Saving replaces the whole list; entries whose `userId` is not an integer or no user has, or whose `days` is not an integer from 1 to 3650, are dropped, and a repeated `userId` keeps its last entry.
+          items:
+            type: object
+            properties:
+              userId:
+                type: number
+                example: 3
+              days:
+                type: number
+                example: 30
     NetworkSettings:
       type: object
       properties:
@@ -6802,7 +6815,8 @@ paths:
               properties:
                 days:
                   type: number
-                  description: Days until auto-delete (0 or null to cancel)
+                  nullable: true
+                  description: Days until auto-delete (0 or null to cancel). Ignored for a movie whose owner has an auto-delete policy (`autoDeleteUserPolicies` in the main settings); the policy value is kept.
                   example: 90
                 userId:
                   type: number

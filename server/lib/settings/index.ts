@@ -133,6 +133,11 @@ export interface ProxySettings {
   bypassLocalAddresses: boolean;
 }
 
+export interface AutoDeleteUserPolicy {
+  userId: number;
+  days: number;
+}
+
 export interface MainSettings {
   apiKey: string;
   applicationTitle: string;
@@ -158,6 +163,7 @@ export interface MainSettings {
   blocklistedTagsLimit: number;
   blockDocumentaryGenre: boolean;
   documentaryExemptUserIds: number[];
+  autoDeleteUserPolicies: AutoDeleteUserPolicy[];
   mediaServerType: number;
   partialRequestsEnabled: boolean;
   enableSpecialEpisodes: boolean;
@@ -442,6 +448,7 @@ class Settings {
         blocklistedTagsLimit: 50,
         blockDocumentaryGenre: true,
         documentaryExemptUserIds: [],
+        autoDeleteUserPolicies: [],
         mediaServerType: MediaServerType.NOT_CONFIGURED,
         partialRequestsEnabled: true,
         enableSpecialEpisodes: false,

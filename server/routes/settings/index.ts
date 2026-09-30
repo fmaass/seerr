@@ -21,7 +21,12 @@ import ImageProxy from '@server/lib/imageproxy';
 import { Permission } from '@server/lib/permissions';
 import { jellyfinFullScanner } from '@server/lib/scanners/jellyfin';
 import { plexFullScanner } from '@server/lib/scanners/plex';
-import type { JobId, Library, MainSettings } from '@server/lib/settings';
+import type {
+  AutoDeleteUserPolicy,
+  JobId,
+  Library,
+  MainSettings,
+} from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { isAuthenticated } from '@server/middleware/auth';
@@ -39,6 +44,7 @@ import { escapeRegExp, merge, omit, set, sortBy } from 'lodash';
 import { rescheduleJob } from 'node-schedule';
 import path from 'path';
 import semver from 'semver';
+import { In } from 'typeorm';
 import { URL } from 'url';
 import { z } from 'zod';
 import blocklistRoutes from './blocklist';
@@ -81,6 +87,81 @@ settingsRoutes.get('/main', (req, res, next) => {
   res.status(200).json(filteredMainSettings(req.user, settings.main));
 });
 
+const AUTO_DELETE_POLICY_MAX_DAYS = 3650;
+
+// Drops what cannot be a policy instead of rejecting the whole save, the same
+// way the documentary exemption list treats bad ids.
+async function validateAutoDeleteUserPolicies(
+  submitted: unknown
+): Promise<AutoDeleteUserPolicy[]> {
+  const entries: unknown[] = Array.isArray(submitted) ? submitted : [];
+  const invalidPolicies: unknown[] = [];
+  const duplicateUserIds = new Set<number>();
+  const daysByUserId = new Map<number, number>();
+
+  for (const entry of entries) {
+    const candidate = (entry ?? {}) as Partial<AutoDeleteUserPolicy>;
+    const userId = Number(candidate.userId);
+    const days = Number(candidate.days);
+
+    if (
+      !Number.isInteger(userId) ||
+      !Number.isInteger(days) ||
+      days < 1 ||
+      days > AUTO_DELETE_POLICY_MAX_DAYS
+    ) {
+      invalidPolicies.push(entry);
+      continue;
+    }
+
+    if (daysByUserId.has(userId)) {
+      duplicateUserIds.add(userId);
+    }
+    daysByUserId.set(userId, days);
+  }
+
+  if (invalidPolicies.length > 0) {
+    logger.warn('Dropped invalid auto-delete user policies', {
+      invalidPolicies,
+      label: 'Settings',
+    });
+  }
+
+  if (duplicateUserIds.size > 0) {
+    logger.warn(
+      'Collapsed duplicate auto-delete user policies to the last entry',
+      {
+        duplicateUserIds: [...duplicateUserIds],
+        label: 'Settings',
+      }
+    );
+  }
+
+  const userIds = [...daysByUserId.keys()];
+  const knownUserIds = new Set(
+    userIds.length > 0
+      ? (
+          await getRepository(User).find({
+            select: { id: true },
+            where: { id: In(userIds) },
+          })
+        ).map((user) => user.id)
+      : []
+  );
+  const unknownUserIds = userIds.filter((userId) => !knownUserIds.has(userId));
+
+  if (unknownUserIds.length > 0) {
+    logger.warn('Dropped auto-delete user policies for unknown users', {
+      unknownUserIds,
+      label: 'Settings',
+    });
+  }
+
+  return userIds
+    .filter((userId) => knownUserIds.has(userId))
+    .map((userId) => ({ userId, days: daysByUserId.get(userId) as number }));
+}
+
 settingsRoutes.post('/main', async (req, res) => {
   const settings = getSettings();
   const replacesDocumentaryExemptUserIds = Object.prototype.hasOwnProperty.call(
@@ -108,10 +189,22 @@ settingsRoutes.post('/main', async (req, res) => {
     });
   }
 
+  const replacesAutoDeleteUserPolicies = Object.prototype.hasOwnProperty.call(
+    req.body ?? {},
+    'autoDeleteUserPolicies'
+  );
+  const autoDeleteUserPolicies = replacesAutoDeleteUserPolicies
+    ? await validateAutoDeleteUserPolicies(req.body?.autoDeleteUserPolicies)
+    : [];
+
   settings.main = merge(settings.main, req.body);
 
   if (replacesDocumentaryExemptUserIds) {
     settings.main.documentaryExemptUserIds = documentaryExemptUserIds;
+  }
+
+  if (replacesAutoDeleteUserPolicies) {
+    settings.main.autoDeleteUserPolicies = autoDeleteUserPolicies;
   }
 
   await settings.save();

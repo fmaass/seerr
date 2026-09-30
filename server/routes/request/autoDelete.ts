@@ -1,6 +1,8 @@
+import { MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import { User } from '@server/entity/User';
+import { getAutoDeletePolicyDays } from '@server/lib/autoDeletePolicy';
 import { Permission } from '@server/lib/permissions';
 import logger from '@server/logger';
 import { isAuthenticated } from '@server/middleware/auth';
@@ -65,7 +67,14 @@ autoDeleteRoutes.post(
         }
       }
 
-      const days = Number(req.body?.days);
+      const ownerId = newOwner?.id ?? request.requestedBy?.id;
+      const policyDays =
+        request.type === MediaType.MOVIE
+          ? getAutoDeletePolicyDays(ownerId)
+          : undefined;
+      // A policy owner's movie keeps the policy value: the body can neither
+      // lower nor clear it.
+      const days = policyDays ?? Number(req.body?.days);
       const changes: QueryDeepPartialEntity<MediaRequest> =
         days > 0
           ? { autoDeleteDays: days }
@@ -93,6 +102,7 @@ autoDeleteRoutes.post(
           requestId: request.id,
           ...(days > 0 ? { days } : {}),
           ...(newOwner ? { reassignedTo: newOwner.id } : {}),
+          ...(policyDays !== undefined ? { policyUserId: ownerId } : {}),
         }
       );
 
