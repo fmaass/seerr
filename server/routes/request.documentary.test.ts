@@ -209,7 +209,7 @@ async function postRequestEndpoint(request: Request) {
 describe('documentary exemption by request owner', () => {
   it('allows an exempt request owner to request a documentary', async () => {
     const owner = await setPermissions(
-      'friend@seerr.dev',
+      'demo@seerr.dev',
       Permission.REQUEST | Permission.REQUEST_MOVIE
     );
     const restoreSettings = applySettings([owner.id]);
@@ -239,7 +239,7 @@ describe('documentary exemption by request owner', () => {
 
   it('allows an exempt request owner with 4K permission to request a 4K documentary', async () => {
     const owner = await setPermissions(
-      'friend@seerr.dev',
+      'demo@seerr.dev',
       Permission.REQUEST_4K | Permission.REQUEST_4K_MOVIE
     );
     const restoreSettings = applySettings([owner.id]);
@@ -261,7 +261,7 @@ describe('documentary exemption by request owner', () => {
 
   it('throws today’s documentary error for a non-exempt request owner', async () => {
     const owner = await setPermissions(
-      'friend@seerr.dev',
+      'demo@seerr.dev',
       Permission.REQUEST | Permission.REQUEST_MOVIE
     );
     const restoreSettings = applySettings([owner.id + 1000]);
@@ -278,7 +278,7 @@ describe('documentary exemption by request owner', () => {
 
   it('uses the exempt body userId owner rather than the non-exempt privileged caller', async () => {
     const caller = await setPermissions(
-      'friend@seerr.dev',
+      'demo@seerr.dev',
       Permission.REQUEST |
         Permission.REQUEST_MOVIE |
         Permission.MANAGE_USERS |
@@ -306,7 +306,7 @@ describe('documentary exemption by request owner', () => {
 
   it('does not use an exempt privileged caller when the body userId owner is non-exempt', async () => {
     const caller = await setPermissions(
-      'friend@seerr.dev',
+      'demo@seerr.dev',
       Permission.REQUEST |
         Permission.REQUEST_MOVIE |
         Permission.MANAGE_USERS |
@@ -331,7 +331,7 @@ describe('documentary exemption by request owner', () => {
 
   it('allows the POST endpoint for an exempt X-API-User loaded by the auth middleware', async () => {
     const owner = await setPermissions(
-      'friend@seerr.dev',
+      'demo@seerr.dev',
       Permission.REQUEST | Permission.REQUEST_MOVIE
     );
     const restoreSettings = applySettings([owner.id]);
@@ -366,7 +366,7 @@ describe('documentary exemption by request owner', () => {
 
   it('still lets a non-admin MANAGE_BLOCKLIST holder override the documentary block', async () => {
     const owner = await setPermissions(
-      'friend@seerr.dev',
+      'demo@seerr.dev',
       Permission.REQUEST |
         Permission.REQUEST_MOVIE |
         Permission.MANAGE_BLOCKLIST
@@ -401,7 +401,7 @@ describe('documentary exemption by request owner', () => {
 
   it('leaves a non-documentary request from a non-exempt owner unaffected', async () => {
     const owner = await setPermissions(
-      'friend@seerr.dev',
+      'demo@seerr.dev',
       Permission.REQUEST | Permission.REQUEST_MOVIE
     );
     const restoreSettings = applySettings([]);
@@ -419,7 +419,7 @@ describe('documentary exemption by request owner', () => {
 
   it('preserves empty-list error, warning, and database behavior', async () => {
     const owner = await setPermissions(
-      'friend@seerr.dev',
+      'demo@seerr.dev',
       Permission.REQUEST | Permission.REQUEST_MOVIE
     );
     const restoreSettings = applySettings([]);

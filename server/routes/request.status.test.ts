@@ -92,7 +92,7 @@ async function seedRequest(
   const requestRepo = getRepository(MediaRequest);
 
   const requestedBy = await userRepo.findOneOrFail({
-    where: { email: 'friend@seerr.dev' },
+    where: { email: 'demo@seerr.dev' },
   });
 
   const media = await mediaRepo.save(
