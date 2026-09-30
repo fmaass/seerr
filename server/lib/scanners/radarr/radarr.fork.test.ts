@@ -485,4 +485,63 @@ describe('Radarr Scanner (fork: missing-movie pass)', () => {
     assert.strictEqual(updatedMedia.externalServiceId, null);
     assert.strictEqual(updatedRequest.status, MediaRequestStatus.DECLINED);
   });
+
+  it('T10: leaves a movie untouched when a sync-disabled server keeps the scan incomplete', async () => {
+    const mediaRepository = getRepository(Media);
+    const requestRepository = getRepository(MediaRequest);
+    const { request } = await seedProcessingWithRequest(9010);
+
+    // The movie may now live on the sync-disabled server, which neither the
+    // bulk scan nor the targeted lookup consults.
+    configureRadarr([
+      { port: 7878, syncEnabled: true },
+      { port: 7879, syncEnabled: false },
+    ]);
+    getMoviesImpl = async () => [fakeRadarrMovie({ tmdbId: 9110 })];
+
+    await radarrScanner.run();
+
+    const updatedMedia = await mediaRepository.findOneOrFail({
+      where: { tmdbId: 9010 },
+    });
+    const updatedRequest = await requestRepository.findOneOrFail({
+      where: { id: request.id },
+    });
+
+    assert.strictEqual(updatedMedia.status, MediaStatus.PROCESSING);
+    assert.strictEqual(updatedMedia.serviceId, 0);
+    assert.strictEqual(updatedMedia.externalServiceId, 42);
+    assert.strictEqual(updatedRequest.status, MediaRequestStatus.APPROVED);
+  });
+
+  it('T11: still resets and declines when every server is sync-enabled and scanned', async () => {
+    const mediaRepository = getRepository(Media);
+    const requestRepository = getRepository(MediaRequest);
+    const { request } = await seedProcessingWithRequest(9011);
+
+    configureRadarr([
+      { port: 7878, syncEnabled: true },
+      { port: 7879, syncEnabled: true },
+    ]);
+    const responses = [
+      [fakeRadarrMovie({ tmdbId: 9111 })],
+      [fakeRadarrMovie({ tmdbId: 9211 })],
+    ];
+    let call = 0;
+    getMoviesImpl = async () => responses[call++] ?? [];
+
+    await radarrScanner.run();
+
+    const updatedMedia = await mediaRepository.findOneOrFail({
+      where: { tmdbId: 9011 },
+    });
+    const updatedRequest = await requestRepository.findOneOrFail({
+      where: { id: request.id },
+    });
+
+    assert.strictEqual(updatedMedia.status, MediaStatus.UNKNOWN);
+    assert.strictEqual(updatedMedia.serviceId, null);
+    assert.strictEqual(updatedMedia.externalServiceId, null);
+    assert.strictEqual(updatedRequest.status, MediaRequestStatus.DECLINED);
+  });
 });

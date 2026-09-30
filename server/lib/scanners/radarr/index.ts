@@ -159,8 +159,18 @@ class RadarrScanner
       // that no longer lists it is missing from every server only once all
       // servers are done. Running it inside the loop would reset — and
       // decline the request of — a movie that simply moved to a later server.
-      for (const candidate of missingCandidates) {
-        await this.detectMissingMovies(candidate.server, candidate.tmdbIds);
+      // Like upstream's orphan cleanup, it also needs a complete standard
+      // scan: a movie may have moved to a sync-disabled server that neither
+      // the bulk lists nor existsInAnyServer consult.
+      if (this.didScanStandard) {
+        for (const candidate of missingCandidates) {
+          await this.detectMissingMovies(candidate.server, candidate.tmdbIds);
+        }
+      } else {
+        this.log(
+          'Skipping missing-movie detection: not every standard Radarr server was scanned.',
+          'info'
+        );
       }
 
       await this.cleanupOrphanedMovies();
